@@ -1,2 +1,94 @@
-# WhiStress
-The official repo of "WhiStress: Enriching Transcriptions with Sentence Stress Detection" (Interspeech 2025)
+# ***WhiStress***: Enriching Transcriptions with Sentence Stress Detection
+
+The official repo of ["WhiStress: Enriching Transcriptions with Sentence Stress Detection"]() (Interspeech 2025).
+
+The ***WhiStress*** model extends OpenAI’s [Whisper](https://arxiv.org/abs/2212.04356) to provide not only accurate transcriptions of speech, but also **token-level sentence stress annotations** — allowing you to detect which words are emphasized in a spoken sentence.
+
+The model is built on top of the [`whisper-small.en`](https://huggingface.co/openai/whisper-small.en) variant, and enhanced with a lightweight decoder-based classifier that predicts the **stress label for each token**.
+
+Checkout our [project's page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/) for more information.
+
+## 🔧 Installation
+
+Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/slp-rl/WhiStress.git
+cd whistress
+pip install -r requirements.txt
+```
+
+## 📦 Model Weights
+
+Download the model weights from [***WhiStress***](https://huggingface.co/slprl/WhiStress) 🤗 huggingface:
+```
+https://huggingface.co/slprl/WhiStress/tree/main
+```
+and place them inside the `whistress/weights` directory.
+
+Expected structure:
+
+```
+whistress/
+├── weights/
+│   └── additional_decoder_block.pt
+│   └── classifier.pt
+│   └── metadata.json
+├── ...
+README.md
+download_weights.py
+...
+```
+
+You can use the the `download_weights.py` script places under the main repo folder. 
+
+
+## 📚 Training Data
+
+WhiStress was trained on the [***TinyStress-15K***](https://huggingface.co/datasets/slprl/TinyStress-15K) dataset. This dataset is based on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), adapted for sentence stress supervision.
+
+
+## 🚀 Usage
+
+### 1. Activate environment
+
+```bash
+source path/to/your/venv/bin/activate
+```
+
+### 2. Run inference
+
+To generate a transcription with stress predictions:
+
+```bash
+python -m inference_example.py
+```
+
+### 3. Evaluate the model
+
+Run evaluation on a sample dataset:
+
+```bash
+python -m evaluation_example.py
+```
+
+## 🖥️ Demo UI
+
+You can checkout our [***Demo***](https://huggingface.co/datasets/loud-whisper-project/tinyStories-audio-emphasized) on 🤗 huggingface.
+
+Or, run the interface locally:
+
+```bash
+python -m app_ui.py
+```
+
+This will launch a browser-based UI for trying out the model interactively on your own audio.
+
+## Training
+
+Coming soon...
+
+
+## 🧠 Citation
+
+If you use ***WhiStress*** in your research or work, please cite our paper (to be added).
