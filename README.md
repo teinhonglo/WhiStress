@@ -14,7 +14,7 @@ Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/slp-rl/WhiStress.git
-cd whistress
+cd WhiStress
 pip install -r requirements.txt
 ```
 
