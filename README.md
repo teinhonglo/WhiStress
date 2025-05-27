@@ -1,8 +1,8 @@
 # ***WhiStress***: Enriching Transcriptions with Sentence Stress Detection
 
-The official repo of ["WhiStress: Enriching Transcriptions with Sentence Stress Detection"]() (Interspeech 2025).
-
-The ***WhiStress*** model extends OpenAI’s [Whisper](https://arxiv.org/abs/2212.04356) to provide not only accurate transcriptions of speech, but also **token-level sentence stress annotations** — allowing you to detect which words are emphasized in a spoken sentence.
+The official repo of
+["***WhiStress***: Enriching Transcriptions with Sentence Stress Detection"](https://arxiv.org/abs/2505.19103) (Interspeech 2025).
+***WhiStress*** extends OpenAI’s [Whisper](https://arxiv.org/abs/2212.04356) to provide not only accurate transcriptions of speech, but also **token-level sentence stress annotations** — allowing you to detect which words are emphasized in a spoken sentence.
 
 The model is built on top of the [`whisper-small.en`](https://huggingface.co/openai/whisper-small.en) variant, and enhanced with a lightweight decoder-based classifier that predicts the **stress label for each token**.
 
@@ -61,7 +61,7 @@ source path/to/your/venv/bin/activate
 To generate a transcription with stress predictions:
 
 ```bash
-python -m inference_example.py
+python inference_example.py
 ```
 
 ### 3. Evaluate the model
@@ -69,17 +69,17 @@ python -m inference_example.py
 Run evaluation on a sample dataset:
 
 ```bash
-python -m evaluation_example.py
+python evaluation_example.py
 ```
 
 ## 🖥️ Demo UI
 
-You can checkout our [***Demo***](https://huggingface.co/datasets/loud-whisper-project/tinyStories-audio-emphasized) on 🤗 huggingface.
+You can check out our [***Demo***](https://huggingface.co/datasets/loud-whisper-project/tinyStories-audio-emphasized) on 🤗 huggingface.
 
 Or, run the interface locally:
 
 ```bash
-python -m app_ui.py
+python app_ui.py
 ```
 
 This will launch a browser-based UI for trying out the model interactively on your own audio.
@@ -89,6 +89,18 @@ This will launch a browser-based UI for trying out the model interactively on yo
 Coming soon...
 
 
-## 🧠 Citation
+## Citation
 
-If you use ***WhiStress*** in your research or work, please cite our paper (to be added).
+If you use ***WhiStress*** in your work, please cite our paper:
+
+```bibtex
+@misc{yosha2025whistress,
+    title={WHISTRESS: Enriching Transcriptions with Sentence Stress Detection}, 
+    author={Iddo Yosha and Dorin Shteyman and Yossi Adi},
+    year={2025},
+    eprint={2505.19103},
+    archivePrefix={arXiv},
+    primaryClass={cs.CL},
+    url={https://arxiv.org/abs/2505.19103}, 
+}
+```
