@@ -40,7 +40,7 @@ download_weights.py
 ...
 ```
 
-You can use the the `download_weights.py` script places under the main repo folder. 
+You can use the `download_weights.py` script places under the main repo folder. 
 
 
 ## 📚 Training Data
