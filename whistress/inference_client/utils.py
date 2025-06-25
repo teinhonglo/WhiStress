@@ -5,10 +5,19 @@ import numpy as np
 import pathlib
 from torch.nn import functional as F
 from ..model import WhiStress
+import os
+import json
 
 
 PATH_TO_WEIGHTS = pathlib.Path(__file__).parent.parent / "weights"
 
+def save_model_parts(model, save_dir, metadata):
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(model.classifier.state_dict(), save_dir / "classifier.pt")
+    torch.save(model.additional_decoder_block.state_dict(), save_dir / "additional_decoder_block.pt")
+    
+    with open(save_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
 
 def get_loaded_model(device="cuda"):
     whisper_model_name = f"openai/whisper-small.en"
@@ -132,7 +141,7 @@ def inference_from_audio_and_transcription(
         return_tensors="pt",
         padding="max_length",
         truncation=True,
-        max_length=30,
+        max_length=50,
     )["input_ids"]
     out_model = model(
                     input_features=input_features.to(device),
