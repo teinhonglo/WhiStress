@@ -15,22 +15,33 @@ def save_model_parts(model, save_dir, metadata):
     os.makedirs(save_dir, exist_ok=True)
     torch.save(model.classifier.state_dict(), save_dir / "classifier.pt")
     torch.save(model.additional_decoder_block.state_dict(), save_dir / "additional_decoder_block.pt")
+    metadata["path_to_weights"] = save_dir
     
     with open(save_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
-def get_loaded_model(device="cuda"):
-    whisper_model_name = f"openai/whisper-small.en"
+def get_loaded_model(device="cuda", metadata=None):
+    if metadata is None:
+        whisper_model_name = f"openai/whisper-small.en"
+        layer_for_head=9
+    else:
+        whisper_model_name = metadata["whisper_tag"]
+        layer_for_head=metadata["layer_for_head"]
+    
     whisper_config = WhisperConfig()
     whistress_model = WhiStress(
-        whisper_config, layer_for_head=9, whisper_backbone_name=whisper_model_name
+        whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
     ).to(device)
     whistress_model.processor.tokenizer.model_input_names = [
         "input_ids",
         "attention_mask",
         "labels_head",
     ]
-    whistress_model.load_model(PATH_TO_WEIGHTS)
+    
+    if metadata is None:
+        whistress_model.load_model(PATH_TO_WEIGHTS)
+    else:
+        whistress_model.load_model(metadata["path_to_weights"])
     whistress_model.to(device)
     whistress_model.eval()
     return whistress_model

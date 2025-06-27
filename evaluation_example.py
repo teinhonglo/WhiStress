@@ -5,6 +5,8 @@ from pathlib import Path
 from whistress import WhiStressInferenceClient
 import pprint
 import pyphen
+import argparse
+
 dic = pyphen.Pyphen(lang='en')
 
 def count_syllables(word):
@@ -16,8 +18,6 @@ CURRENT_DIR = Path(__file__).parent
 precision_metric = evaluate.load("precision")
 recall_metric = evaluate.load("recall")
 f1_metric = evaluate.load("f1")
-
-whistress_client = WhiStressInferenceClient(device="cuda" if torch.cuda.is_available() else "cpu")
 
 def compute_prf_metrics(predictions, references, average="binary"):
     """
@@ -37,7 +37,7 @@ def compute_prf_metrics(predictions, references, average="binary"):
     return {"precision": p, "recall": r, "f1": f}
 
 
-def calculate_metrics_on_dataset(dataset):
+def calculate_metrics_on_dataset(dataset, whistress_client):
     """
     Sample structure example for slp-rl/StressTest dataset:
     # {'transcription_id': '98dd4a46-6b59-4817-befc-e35d548465c7',
@@ -144,13 +144,28 @@ def add_stress_pattern(example):
 if __name__ == "__main__":
     from datasets import load_dataset
     import json
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--metadata_fn", type=str)
+    parser.add_argument("--results_dir", type=str)
+    args = parser.parse_args()
     # Load your dataset, replace with the actual dataset you are using
     dataset_name = "slprl/TinyStress-15K"  # Example dataset name, change as needed
     dataset = load_dataset(dataset_name)
     split_name = 'test' 
+    
     print(f"Evaluating WhiStress on {dataset_name} for split {split_name}...")
+    if args.metadata_fn is not None:
+        with open(args.metadata_fn, "r") as fn:
+            metadata = json.load(fn)
+    else:
+        metadata = None
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    whistress_client = WhiStressInferenceClient(device=device, metadata=metadata)
     dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
-    metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name])
+    
+    metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
     # Save or log the metrics as needed
     results = {
         "dataset": dataset_name,
@@ -158,7 +173,12 @@ if __name__ == "__main__":
         "metrics": metrics
     }
     pprint.pp(f"Results: {results}")
-    results_dir = CURRENT_DIR / "evaluation_results"
+    
+    if args.results_dir is None:
+        results_dir = CURRENT_DIR / "evaluation_results"
+    else:
+        results_dir = Path(args.results_dir)
+    
     results_dir.mkdir(parents=True, exist_ok=True)
     with open(f"{results_dir}/whistress_evaluation.json", "w") as f:
         json.dump(results, f, indent=2)

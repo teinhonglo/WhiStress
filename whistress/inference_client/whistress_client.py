@@ -4,9 +4,9 @@ from typing import Union, Dict
 
 
 class WhiStressInferenceClient:
-    def __init__(self, device="cuda"):
+    def __init__(self, device="cuda", metadata=None):
         self.device = device
-        self.whistress = get_loaded_model(self.device)
+        self.whistress = get_loaded_model(self.device, metadata=metadata)
 
     def predict(
         self, audio: Dict[str, Union[np.ndarray, int]], transcription=None, return_pairs=True

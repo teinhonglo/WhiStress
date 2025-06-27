@@ -20,18 +20,29 @@ precision_metric = evaluate.load("precision")
 recall_metric = evaluate.load("recall")
 f1_metric = evaluate.load("f1")
 
-def compute_prf(preds, labels):
-    p = precision_metric.compute(predictions=preds, references=labels, average="binary")["precision"]
-    r = recall_metric.compute(predictions=preds, references=labels, average="binary")["recall"]
-    f = f1_metric.compute(predictions=preds, references=labels, average="binary")["f1"]
+def compute_prf_metrics(predictions, references, average="binary"):
+    """
+    Computes precision, recall, and F1 using Hugging Face's `evaluate`.
+    Args:
+        predictions (List[int]): Model's predicted labels.
+        references  (List[int]): True labels.
+        average     (str): "binary", "macro", "micro", or "weighted".
+                          Use "binary" for two-class tasks.
+    Returns:
+        Dict[str, float]: e.g. {"precision": 0.8, "recall": 0.75, "f1": 0.77}
+    """
+    p = precision_metric.compute(predictions=predictions, references=references, average=average)["precision"]
+    r = recall_metric.compute(predictions=predictions, references=references, average=average)["recall"]
+    f = f1_metric.compute(predictions=predictions, references=references, average=average)["f1"]
+
     return {"precision": p, "recall": r, "f1": f}
 
-def generate_stress_binary(transcription, emphasis_indices):
+def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
     words = transcription.strip().split()
     return [1 if i in emphasis_indices else 0 for i in range(len(words))]
 
 def prerpocess(example):
-    binary = generate_stress_binary(example["transcription"], example["emphasis_indices"])
+    binary = compute_stress_binary(example["transcription"], example["emphasis_indices"])
     example["stress_pattern"] = {"binary": binary}
     example["audio"]["array"] = prepare_audio(audio=example["audio"], target_sr=16000)
     example["audio"]["sampling_rate"] = 16000
@@ -61,19 +72,21 @@ class StressDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
+    parser.add_argument("--whisper_tag", type=str, default="openai/whisper-small.en")
     parser.add_argument("--pretrained_ckpt_dir", type=str)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--init_lr", type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--layer_for_head', type=int, default=9)
+    parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     init_lr = args.init_lr
     exp_dir = args.exp_dir
     pretrained_ckpt_dir = args.pretrained_ckpt_dir
+    whisper_tag = args.whisper_tag
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     best_ckpt_dir = os.path.join(exp_dir, "best")
@@ -98,15 +111,16 @@ if __name__ == "__main__":
     hyper_params = {"epochs": args.epochs,
                     "batch_size": args.batch_size,
                     "init_lr": args.init_lr,
-                    "layer_for_head": args.layer_for_head
+                    "layer_for_head": args.layer_for_head,
+                    "whisper_tag": args.whisper_tag
                     }
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = WhisperTokenizerFast.from_pretrained("openai/whisper-small.en", add_prefix_space=True)
-    processor = WhisperProcessor.from_pretrained("openai/whisper-small.en")
+    tokenizer = WhisperTokenizerFast.from_pretrained(whisper_tag, add_prefix_space=True)
+    processor = WhisperProcessor.from_pretrained(whisper_tag)
     processor.tokenizer = tokenizer
-    config = WhisperConfig.from_pretrained("openai/whisper-small.en")
+    config = WhisperConfig.from_pretrained(whisper_tag)
     model = WhiStress(config=config, layer_for_head=args.layer_for_head).to(device)
 
     if args.resume and (pretrained_ckpt_dir / "model.pt").exists():
@@ -203,7 +217,7 @@ if __name__ == "__main__":
                         all_preds.append(p)
                         all_labels.append(l)
 
-        prf = compute_prf(all_preds, all_labels)
+        prf = compute_prf_metrics(all_preds, all_labels)
         print(f"[Epoch {epoch+1}] Precision: {prf['precision']:.4f}, Recall: {prf['recall']:.4f}, F1: {prf['f1']:.4f}")
         metrics_log.append({"epoch": epoch+1, **prf})
 
