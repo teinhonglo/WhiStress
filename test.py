@@ -114,19 +114,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--whisper_tag", type=str, default="openai/whisper-small.en")
     parser.add_argument("--pretrained_ckpt_dir", type=str)
-    parser.add_argument("--epochs", type=int, default=15)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--init_lr", type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--layer_for_head', type=int, default=9)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
-    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     init_lr = args.init_lr
     exp_dir = args.exp_dir
-    if args.pretrained_ckpt_dir:
-        pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
+    pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
     whisper_tag = args.whisper_tag
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
@@ -134,10 +131,6 @@ if __name__ == "__main__":
     exp_dir = Path(exp_dir)
     ckpt_dir = Path(ckpt_dir)
     best_ckpt_dir = Path(best_ckpt_dir)
-
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    best_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     seed = args.seed
     random.seed(seed)
@@ -149,13 +142,6 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     os.environ['PYTHONHASHSEED'] = str(seed)
 
-    hyper_params = {"epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "init_lr": args.init_lr,
-                    "layer_for_head": args.layer_for_head,
-                    "whisper_tag": args.whisper_tag
-                    }
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     tokenizer = WhisperTokenizerFast.from_pretrained(whisper_tag, add_prefix_space=True)
@@ -164,77 +150,39 @@ if __name__ == "__main__":
     config = WhisperConfig.from_pretrained(whisper_tag)
     model = WhiStress(config=config, layer_for_head=args.layer_for_head).to(device)
 
-    if args.resume and (pretrained_ckpt_dir / "model.pt").exists():
-        model.load_state_dict(torch.load(pretrained_ckpt_dir / "model.pt"))
-
-    optimizer = AdamW(model.parameters(), lr=init_lr)
+    #model.load_state_dict(torch.load(pretrained_ckpt_dir / "model.pt"))
+    with open(pretrained_ckpt_dir / "metadata.json", "r") as fn:
+        metadata = json.load(fn)
+    
+    model = get_loaded_model(device="cuda", metadata=metadata)
 
     dataset = load_dataset("slprl/TinyStress-15K")
-    dataset["train"] = dataset["train"].map(lambda x: preprocess(x, tokenizer=tokenizer), num_proc=4)
     dataset["test"] = dataset["test"].map(lambda x: preprocess(x, tokenizer=tokenizer), num_proc=4)
 
     data_collate = MyCollate(tokenizer=tokenizer)
-    train_loader = DataLoader(StressDataset(dataset["train"]), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
     val_loader = DataLoader(StressDataset(dataset["test"]), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
-
-    for epoch in range(args.epochs):
-        model.train()
-        total_loss = 0.0
-        for batch in tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training"):
+    
+    # === Validation ===
+    model.eval()
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for batch in tqdm(val_loader, desc=f"Validation"):
             audio_array = [x["array"] for x in batch["audio_input"]]
             word_labels_batch = batch["labels_head"]
-
+            
             input_features = processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
             decoder_input_ids = batch["decoder_input_ids"].to(device)
             labels = batch["labels_head"].to(device)
-
             output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, labels_head=labels)
-            loss = output.loss
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+            
+            preds = output.preds.view(-1).tolist()
+            labels_flat = labels.view(-1).tolist()
+            for p, l in zip(preds, labels_flat):
+                if l != -100:
+                    all_preds.append(p)
+                    all_labels.append(l)
 
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss / len(train_loader):.4f}")
-
-        # === Validation ===
-        model.eval()
-        all_preds, all_labels = [], []
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"[Epoch {epoch+1}] Validation"):
-                audio_array = [x["array"] for x in batch["audio_input"]]
-                word_labels_batch = batch["labels_head"]
-
-                input_features = processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
-                decoder_input_ids = batch["decoder_input_ids"].to(device)
-                labels = batch["labels_head"].to(device)
-
-                output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, labels_head=labels)
-
-                preds = output.preds.view(-1).tolist()
-                labels_flat = labels.view(-1).tolist()
-                for p, l in zip(preds, labels_flat):
-                    if l != -100:
-                        all_preds.append(p)
-                        all_labels.append(l)
-
-        prf = compute_prf_metrics(all_preds, all_labels)
-        print(f"[Epoch {epoch+1}] Precision: {prf['precision']:.4f}, Recall: {prf['recall']:.4f}, F1: {prf['f1']:.4f}")
-        metrics_log.append({"epoch": epoch+1, **prf})
-
-        torch.save(model.state_dict(), ckpt_dir / f"epoch{epoch+1}.pt")
-        if prf["f1"] > best_f1:
-            best_f1, best_epoch = prf["f1"], epoch + 1
-            torch.save(model.state_dict(), best_ckpt_dir / "model.pt")
-            save_model_parts(model, save_dir=best_ckpt_dir, metadata=hyper_params)
-            print(f"✅ Best model updated at epoch {best_epoch} with F1 = {best_f1:.4f}")
-
-            with open(exp_dir / "best.log", "w") as f:
-                json.dump(metrics_log[-1], f, indent=4)
-
-    with open(exp_dir / "metrics.json", "w") as f:
-        json.dump(metrics_log, f, indent=4)
-
-    print(f"\n🏆 Final best model at epoch {best_epoch} with F1 = {best_f1:.4f}")
+    prf = compute_prf_metrics(all_preds, all_labels)
+    print(f"Precision: {prf['precision']:.4f}, Recall: {prf['recall']:.4f}, F1: {prf['f1']:.4f}")

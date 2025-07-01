@@ -15,7 +15,7 @@ def save_model_parts(model, save_dir, metadata):
     os.makedirs(save_dir, exist_ok=True)
     torch.save(model.classifier.state_dict(), save_dir / "classifier.pt")
     torch.save(model.additional_decoder_block.state_dict(), save_dir / "additional_decoder_block.pt")
-    metadata["path_to_weights"] = save_dir
+    metadata["path_to_weights"] = str(save_dir)
     
     with open(save_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
