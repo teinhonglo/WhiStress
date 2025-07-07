@@ -43,35 +43,54 @@ def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> li
     words = transcription.strip().split()
     return [1 if i in emphasis_indices else 0 for i in range(len(words))]
 
-def preprocess(example, tokenizer=None):
+def preprocess(example, model):
+    # 1. word-level binary label
     binary = compute_stress_binary(example["transcription"], example["emphasis_indices"])
     example["stress_pattern"] = {"binary": binary}
+
+    # 2. prepare audio
     array = prepare_audio(audio=example["audio"])
     example["audio_input"] = {
         "array": array,
         "sampling_rate": 16000
     }
 
-    words = example["transcription"].strip().split()
-    tokenized = tokenizer(
-        words,
-        return_tensors=None,
-        padding=False,            
-        truncation=False,         
-        is_split_into_words=True,
+    # 3. tokenize transcription
+    transcription = example["transcription"]
+    tokenized = model.processor.tokenizer(
+        transcription,
+        return_tensors="pt",
+        truncation=True,
+        max_length=50
     )
-    word_ids = tokenized.word_ids()
-    token_labels = [
-        binary[word_id] if word_id is not None and word_id < len(binary) else -100
-        for word_id in word_ids
+
+    input_ids = tokenized["input_ids"][0]
+    decoded_tokens = [
+        model.processor.tokenizer.decode([tid], skip_special_tokens=False)
+        for tid in input_ids
     ]
-    decoder_input_ids = tokenized["input_ids"]
-    '''
-    decoder_input_ids [50257, 50362, 1375, 1392, 845, 6568, 290, 2067, 284, 27318, 656, 262, 7604, 13, 50256]
-    word_ids [None, None, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, None]
-    token_labels [-100, -100, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, -100]
-    '''
-    example["decoder_input_ids"] = decoder_input_ids
+
+    # 4. align word-level binary to token-level
+    token_labels = []
+    word_idx = 0
+    for token in decoded_tokens:
+        if token in model.processor.tokenizer.all_special_tokens:
+            token_labels.append(-100)
+            continue
+
+        if token.startswith(" "):  # new word
+            label = binary[word_idx] if word_idx < len(binary) else 0
+            token_labels.append(label)
+            word_idx += 1
+        else:  # subword
+            label = binary[word_idx - 1] if word_idx - 1 < len(binary) else 0
+            token_labels.append(label)
+
+    # 5. LEFT SHIFT → align label with logits[t] = prediction of token[t+1]
+    token_labels = token_labels[1:] + [-100]
+
+    # 6. store results
+    example["decoder_input_ids"] = input_ids
     example["labels_head"] = token_labels
     return example
 
@@ -95,7 +114,7 @@ class StressDataset(torch.utils.data.Dataset):
 
 @dataclass
 class MyCollate:
-    tokenizer: WhisperTokenizerFast
+    processor: WhisperProcessor
 
     def __call__(self, batch):
         decoder_input_ids = [torch.tensor(b["decoder_input_ids"]) for b in batch]
@@ -104,7 +123,7 @@ class MyCollate:
         return {
             "audio": [b["audio"] for b in batch],
             "audio_input": [b["audio_input"] for b in batch],
-            "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id),
+            "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
             "transcription": [b["transcription"] for b in batch],
             "id": [b["id"] for b in batch]
@@ -158,11 +177,13 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    tokenizer = WhisperTokenizerFast.from_pretrained(whisper_tag, add_prefix_space=True)
-    processor = WhisperProcessor.from_pretrained(whisper_tag)
-    processor.tokenizer = tokenizer
     config = WhisperConfig.from_pretrained(whisper_tag)
-    model = WhiStress(config=config, layer_for_head=args.layer_for_head).to(device)
+    model = WhiStress(config=config, layer_for_head=args.layer_for_head, whisper_backbone_name=whisper_tag).to(device)
+    model.processor.tokenizer.model_input_names = [
+        "input_ids",
+        "attention_mask",
+        "labels_head",
+    ]
 
     if args.resume and (pretrained_ckpt_dir / "model.pt").exists():
         model.load_state_dict(torch.load(pretrained_ckpt_dir / "model.pt"))
@@ -170,10 +191,10 @@ if __name__ == "__main__":
     optimizer = AdamW(model.parameters(), lr=init_lr)
 
     dataset = load_dataset("slprl/TinyStress-15K")
-    dataset["train"] = dataset["train"].map(lambda x: preprocess(x, tokenizer=tokenizer), num_proc=4)
-    dataset["test"] = dataset["test"].map(lambda x: preprocess(x, tokenizer=tokenizer), num_proc=4)
+    dataset["train"] = dataset["train"].map(lambda x: preprocess(x, model=model), num_proc=4)
+    dataset["test"] = dataset["test"].map(lambda x: preprocess(x, model=model), num_proc=4)
 
-    data_collate = MyCollate(tokenizer=tokenizer)
+    data_collate = MyCollate(processor=model.processor)
     train_loader = DataLoader(StressDataset(dataset["train"]), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
     val_loader = DataLoader(StressDataset(dataset["test"]), batch_size=args.batch_size, collate_fn=data_collate)
 
@@ -186,7 +207,7 @@ if __name__ == "__main__":
             audio_array = [x["array"] for x in batch["audio_input"]]
             word_labels_batch = batch["labels_head"]
 
-            input_features = processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
+            input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
             decoder_input_ids = batch["decoder_input_ids"].to(device)
             labels = batch["labels_head"].to(device)
 
@@ -207,7 +228,7 @@ if __name__ == "__main__":
                 audio_array = [x["array"] for x in batch["audio_input"]]
                 word_labels_batch = batch["labels_head"]
 
-                input_features = processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
+                input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
                 decoder_input_ids = batch["decoder_input_ids"].to(device)
                 labels = batch["labels_head"].to(device)
 
