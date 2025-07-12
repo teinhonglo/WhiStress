@@ -40,7 +40,7 @@ def compute_prf_metrics(predictions, references, average="binary"):
 def calculate_metrics_on_dataset(dataset, whistress_client):
     """
     Sample structure example for slp-rl/StressTest dataset:
-    # {'transcription_id': '98dd4a46-6b59-4817-befc-e35d548465c7',
+    # {'id': '98dd4a46-6b59-4817-befc-e35d548465c7',
     #  'transcription': 'You chose to do this?',
     #  'description': 'You voluntarily do this without being forced?',
     #  'intonation': 'You *chose* to do this?',
@@ -124,7 +124,7 @@ def calculate_metrics_on_dataset(dataset, whistress_client):
             "pred_stresses": list(pred_stresses),
             "words": word_results
         })
-
+        
         predictions.extend(pred_stresses)
         references.extend(gt_stresses)
 

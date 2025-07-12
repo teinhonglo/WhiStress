@@ -138,9 +138,11 @@ class WhiStress(PreTrainedModel):
         decoder_input_ids=None,
         labels_head=None,
         whisper_labels=None,
-    ):
+    ):  
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.whisper_model.eval()
+        #print("input_features", input_features)
+        #print("decoder_input_ids", decoder_input_ids)
 
         # pass the inputs through the model
         backbone_outputs = self.whisper_model(

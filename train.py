@@ -5,6 +5,7 @@ import json
 import random
 import numpy as np
 from dataclasses import dataclass, field
+import wandb
 
 import torch
 from torch.utils.data import DataLoader
@@ -73,15 +74,17 @@ def preprocess(example, model):
     # 4. align word-level binary to token-level
     token_labels = []
     word_idx = 0
+    first_real_token = True
     for token in decoded_tokens:
         if token in model.processor.tokenizer.all_special_tokens:
             token_labels.append(-100)
             continue
 
-        if token.startswith(" "):  # new word
+        if token.startswith(" ") or first_real_token:  # new word
             label = binary[word_idx] if word_idx < len(binary) else 0
             token_labels.append(label)
             word_idx += 1
+            first_real_token = False
         else:  # subword
             label = binary[word_idx - 1] if word_idx - 1 < len(binary) else 0
             token_labels.append(label)
@@ -109,6 +112,7 @@ class StressDataset(torch.utils.data.Dataset):
             "decoder_input_ids": item["decoder_input_ids"],
             "labels_head": item["labels_head"],
             "transcription": item["transcription"],
+            "stress_pattern_binary": item["stress_pattern"]["binary"],
             "id": item["id"]
         }
 
@@ -126,6 +130,7 @@ class MyCollate:
             "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
             "transcription": [b["transcription"] for b in batch],
+            "stress_pattern_binary": [b["stress_pattern_binary"] for b in batch],
             "id": [b["id"] for b in batch]
         }
 
@@ -138,6 +143,8 @@ if __name__ == "__main__":
     parser.add_argument("--init_lr", type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--layer_for_head', type=int, default=9)
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--accumulate_gradient_steps", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -147,6 +154,7 @@ if __name__ == "__main__":
     if args.pretrained_ckpt_dir:
         pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
     whisper_tag = args.whisper_tag
+    wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     best_ckpt_dir = os.path.join(exp_dir, "best")
@@ -191,34 +199,52 @@ if __name__ == "__main__":
     optimizer = AdamW(model.parameters(), lr=init_lr)
 
     dataset = load_dataset("slprl/TinyStress-15K")
+    raw_train_dataset = dataset["train"].train_test_split(test_size=0.1, seed=seed)
+    dataset["train"] = raw_train_dataset["train"]
+    dataset["val"] = raw_train_dataset["test"]
+    
     dataset["train"] = dataset["train"].map(lambda x: preprocess(x, model=model), num_proc=4)
+    dataset["val"] = dataset["val"].map(lambda x: preprocess(x, model=model), num_proc=4)
     dataset["test"] = dataset["test"].map(lambda x: preprocess(x, model=model), num_proc=4)
 
     data_collate = MyCollate(processor=model.processor)
     train_loader = DataLoader(StressDataset(dataset["train"]), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
-    val_loader = DataLoader(StressDataset(dataset["test"]), batch_size=args.batch_size, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(dataset["val"]), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
+    patience_counter = 0
 
     for epoch in range(args.epochs):
         model.train()
         total_loss = 0.0
-        for batch in tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training"):
+        train_all_preds, train_all_labels = [], []
+        for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
             audio_array = [x["array"] for x in batch["audio_input"]]
-            word_labels_batch = batch["labels_head"]
 
             input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
             decoder_input_ids = batch["decoder_input_ids"].to(device)
             labels = batch["labels_head"].to(device)
 
             output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, labels_head=labels)
-            loss = output.loss
-            optimizer.zero_grad()
+            loss = output.loss / args.accumulate_gradient_steps
             loss.backward()
-            optimizer.step()
+            
+            if (step + 1) % args.accumulate_gradient_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            # collect predictions for PRF
+            preds = output.preds.view(-1).tolist()
+            labels_flat = labels.view(-1).tolist()
+            for p, l in zip(preds, labels_flat):
+                if l != -100:
+                    train_all_preds.append(p)
+                    train_all_labels.append(l)
+            
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1} - Train Loss: {total_loss / len(train_loader):.4f}")
+        train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
+        print(f"Epoch {epoch+1} - Train Loss: {total_loss / len(train_loader):.4f}, Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
 
         # === Validation ===
         model.eval()
@@ -226,7 +252,6 @@ if __name__ == "__main__":
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"[Epoch {epoch+1}] Validation"):
                 audio_array = [x["array"] for x in batch["audio_input"]]
-                word_labels_batch = batch["labels_head"]
 
                 input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
                 decoder_input_ids = batch["decoder_input_ids"].to(device)
@@ -254,6 +279,24 @@ if __name__ == "__main__":
 
             with open(exp_dir / "best.log", "w") as f:
                 json.dump(metrics_log[-1], f, indent=4)
+            
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= args.patience:
+                print(f"⏹️ Early stopping triggered at epoch {epoch+1}")
+                break
+        
+        wandb.log({
+            "epoch": epoch + 1,
+            "train/loss": total_loss / len(train_loader),
+            "train/precision": train_prf["precision"],
+            "train/recall": train_prf["recall"],
+            "train/f1": train_prf["f1"],
+            "val/precision": prf["precision"],
+            "val/recall": prf["recall"],
+            "val/f1": prf["f1"]
+        })
 
     with open(exp_dir / "metrics.json", "w") as f:
         json.dump(metrics_log, f, indent=4)
