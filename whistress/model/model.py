@@ -56,8 +56,10 @@ class WhiStress(PreTrainedModel):
     def __init__(
         self,
         config: WhisperConfig,
+        feats_aug: Optional[str] = "default",
         layer_for_head: Optional[int] = None,
         whisper_backbone_name="openai/whisper-small.en",
+        class_weights = [1.0, 2.33],
     ):
         super().__init__(config)
         self.whisper_backbone_name = whisper_backbone_name
@@ -65,6 +67,7 @@ class WhiStress(PreTrainedModel):
             self.whisper_backbone_name,
         ).eval()
         self.processor = WhisperProcessor.from_pretrained(self.whisper_backbone_name)
+        self.feats_aug = feats_aug
 
         input_dim = self.whisper_model.config.d_model  # Model's hidden size
         output_dim = 2  # Number of classes or output features for the new head
@@ -74,9 +77,7 @@ class WhiStress(PreTrainedModel):
         self.additional_decoder_block = WhisperDecoderLayer(config)
         self.classifier = FCNN(input_dim, output_dim)
         # add weighted loss for CE
-        neg_weight = 1.0
-        pos_weight = 0.7 / 0.3
-        class_weights = torch.tensor([neg_weight, pos_weight])
+        class_weights = torch.tensor(class_weights)
         self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100, weight=class_weights)
         self.layer_for_head = -1 if layer_for_head is None else layer_for_head
 
@@ -173,6 +174,8 @@ class WhiStress(PreTrainedModel):
         # calculate softmax
         head_probs = F.softmax(head_logits, dim=-1)
         preds = head_probs.argmax(dim=-1).to(device)
+        # Calculate custom loss if labels are provided
+        loss = None
         if labels_head is not None:
             preds = torch.where(
                 torch.isin(
@@ -181,9 +184,6 @@ class WhiStress(PreTrainedModel):
                 torch.tensor(-100),
                 preds,
             )
-        # Calculate custom loss if labels are provided
-        loss = None
-        if labels_head is not None:
             # CrossEntropyLoss for the custom head
             loss = self.loss_fct(
                 head_logits.reshape(-1, head_logits.size(-1)), labels_head.reshape(-1)
