@@ -1,21 +1,51 @@
-# ***WhiStress***: Enriching Transcriptions with Sentence Stress Detection
+## ⚠️ Notice on Modifications
 
-The official repo of
-["***WhiStress***: Enriching Transcriptions with Sentence Stress Detection"](https://arxiv.org/abs/2505.19103) (Interspeech 2025).
-***WhiStress*** extends OpenAI’s [Whisper](https://arxiv.org/abs/2212.04356) to provide not only accurate transcriptions of speech, but also **token-level sentence stress annotations** — allowing you to detect which words are emphasized in a spoken sentence.
+This repository is an **unofficial extension** of the original repository
+[WhiStress](https://github.com/slp-rl/WhiStress) (Interspeech 2025).
 
-The model is built on top of the [`whisper-small.en`](https://huggingface.co/openai/whisper-small.en) variant, and enhanced with a lightweight decoder-based classifier that predicts the **stress label for each token**.
+In addition to the original functionalities, this version includes:
+- Added: `train.py`, `test.py`, and `run.sh` for streamlined training and evaluation
+- Light modifications to:
+  - `whistress/inference_client/utils.py`
+  - `whistress/inference_client/whistress_client.py`
+  - `whistress/model/model.py`
+  - `evaluation_example.py`
 
-Checkout our [project's page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/) for more information.
+These changes are intended to support custom workflows and reproducibility, while preserving alignment with the original implementation.
+
+If you are interested in the official version, please refer to the original repository and [project page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/).
 
 ## 🔧 Installation
 
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/slp-rl/WhiStress.git
+git clone https://github.com/teinhonglo/WhiStress.git
 cd WhiStress
+
+# Create and activate the conda environment
+conda create -n whistress python==3.10
+conda activate whistress
+
+# Install required packages
 pip install -r requirements.txt
+````
+
+### Configure the Conda Environment
+
+Modify the conda startup method in `path.sh` to match your own environment path:
+
+```bash
+vim path.sh
+```
+
+### Basic Version: Replace the following content with the online version if needed
+
+```bash
+export PYTHONNOUSERSITE=1
+
+eval "$(conda shell.bash hook)"
+conda activate whistress
 ```
 
 ## 📦 Model Weights
@@ -53,7 +83,7 @@ WhiStress was trained on the [***TinyStress-15K***](https://huggingface.co/datas
 ### 1. Activate environment
 
 ```bash
-source path/to/your/venv/bin/activate
+. ./path.sh
 ```
 
 ### 2. Run inference
@@ -86,8 +116,24 @@ This will launch a browser-based UI for trying out the model interactively on yo
 
 ## Training
 
-Coming soon...
+```bash
+./run.sh --stage 1 --gpuid 0
+```
 
+## 📊 Results
+
+| Name                  | Precision | Recall | F1    |
+|-----------------------|-----------|--------|-------|
+| Paper                 | 91.20     | 90.60  | 90.90 |
+| Dry Run               | 88.84     | 93.31  | 91.02 |
+| └─ without transcription | 88.15     | 94.17  | 91.06 |
+| RP (Reproduced)       | 93.92     | 93.38  | 93.65 |
+| └─ without transcription | 92.46     | 94.39  | 93.14 |
+
+- **Paper**: Results reported in the original WhiStress paper.  
+- **Dry Run**: Inference using the official pretrained weights without any retraining.  
+- **RP (Reproduced)**: Results from retraining the model using the provided `model.py` and corpus.  
+- *without transcription*: Evaluation conducted without using ground-truth transcriptions (i.e., `with_transcription=False` in `calculate_metrics_on_dataset`).
 
 ## Citation
 
