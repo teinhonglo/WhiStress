@@ -13,7 +13,7 @@ In addition to the original functionalities, this version includes:
 
 These changes are intended to support custom workflows and reproducibility, while preserving alignment with the original implementation.
 
-If you are interested in the official version, please refer to the original repository and [project page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/).
+If you are interested in the official version, please refer to the [original repository](https://github.com/slp-rl/WhiStress) and [project page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/).
 
 ## 🔧 Installation
 
