@@ -37,7 +37,7 @@ def compute_prf_metrics(predictions, references, average="binary"):
     return {"precision": p, "recall": r, "f1": f}
 
 
-def calculate_metrics_on_dataset(dataset, whistress_client):
+def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=True):
     """
     Sample structure example for slp-rl/StressTest dataset:
     # {'id': '98dd4a46-6b59-4817-befc-e35d548465c7',
@@ -66,14 +66,22 @@ def calculate_metrics_on_dataset(dataset, whistress_client):
 
     for sample in tqdm(dataset):
         gt_stresses = sample['stress_pattern']['binary']
-        # scored = 
-        scored = whistress_client.predict(
-            audio=sample['audio'],
-            # Using ground truth transcription for evaluating stress prediction ability. 
-            # set transcription to None if not available
-            transcription=sample['transcription'], 
-            return_pairs=True
-        )
+        
+        if with_transcription:
+            # Transcription
+            scored = whistress_client.predict(
+                audio=sample['audio'],
+                # Using ground truth transcription for evaluating stress prediction ability. 
+                # set transcription to None if not available
+                transcription=sample['transcription'], 
+                return_pairs=True
+            )
+        else:
+            scored = whistress_client.predict(
+                audio=sample['audio'],
+                transcription=None, 
+                return_pairs=True
+            )
         _, pred_stresses = zip(*scored)
         # Ensure the lengths are the same 
         # When transcription is not provided, predictions should be aligned with the ground truth
@@ -166,14 +174,16 @@ if __name__ == "__main__":
     dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
     
     metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
-    # Save or log the metrics as needed
+    metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
+
     results = {
         "dataset": dataset_name,
         "split": split_name,
-        "metrics": metrics
+        "metrics": metrics,
+        "metrics_wot": metrics_wot
     }
-    pprint.pp(f"Results: {results}")
-    
+
+    # Save or log the metrics as needed
     if args.results_dir is None:
         results_dir = CURRENT_DIR / "evaluation_results"
     else:
@@ -185,4 +195,7 @@ if __name__ == "__main__":
 
     with open(f"{results_dir}/whistress_error_analysis.json", "w") as f:
         json.dump(error_cases, f, indent=2)
+    
+    with open(f"{results_dir}/whistress_error_analysis_wot.json", "w") as f:
+        json.dump(error_cases_wot, f, indent=2)
         
