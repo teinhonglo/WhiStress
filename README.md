@@ -114,7 +114,7 @@ python app_ui.py
 
 This will launch a browser-based UI for trying out the model interactively on your own audio.
 
-## Training
+## 🏋️‍♀️ Training
 
 ```bash
 ./run.sh --stage 1 --gpuid 0
