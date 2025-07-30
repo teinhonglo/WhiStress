@@ -39,7 +39,7 @@ Modify the conda startup method in `path.sh` to match your own environment path:
 vim path.sh
 ```
 
-### Basic Version: Replace the following content with the online version if needed
+### Basic Version
 
 ```bash
 export PYTHONNOUSERSITE=1
