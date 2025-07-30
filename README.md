@@ -127,13 +127,13 @@ This will launch a browser-based UI for trying out the model interactively on yo
 | Paper                 | 91.20     | 90.60  | 90.90 |
 | Dry Run               | 88.84     | 93.31  | 91.02 |
 | └─ without transcription | 88.15     | 94.17  | 91.06 |
-| RP (Reproduced)       | 93.92     | 93.38  | 93.65 |
+| RP       | 93.92     | 93.38  | 93.65 |
 | └─ without transcription | 92.46     | 94.39  | 93.14 |
 
 - **Paper**: Results reported in the original WhiStress paper.  
 - **Dry Run**: Inference using the official pretrained weights without any retraining.  
-- **RP (Reproduced)**: Results from retraining the model using the provided `model.py` and corpus.  
-- *without transcription*: Evaluation conducted without using ground-truth transcriptions (i.e., `with_transcription=False` in `calculate_metrics_on_dataset`).
+- **RP**: Results from retraining the model using the provided `model.py` and corpus.  
+- *without transcription*: Evaluation conducted without using ground-truth transcriptions (i.e., `with_transcription=False` in `calculate_metrics_on_dataset`[Link](https://github.com/teinhonglo/WhiStress/blob/main/evaluation_example.py#L79-L84)).
 
 ## Citation
 
