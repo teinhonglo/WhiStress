@@ -18,7 +18,8 @@ from torch.nn.utils.rnn import pad_sequence
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
 from whistress.model.model import WhiStress
 
-from utils import StressDataset, MyCollate, compute_prf_metrics
+from utils import StressDataset, MyCollate
+from metrics import compute_prf_metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -29,12 +30,10 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument('--layer_for_head', type=int, default=9)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
-    parser.add_argument("--feats_aug", type=str, default="default")
     args = parser.parse_args()
 
     init_lr = args.init_lr
     exp_dir = Path(args.exp_dir)
-    feats_aug = args.feats_aug
     pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
     whisper_tag = args.whisper_tag
 
@@ -65,8 +64,8 @@ if __name__ == "__main__":
     model = get_loaded_model(device="cuda", metadata=metadata)
 
     dataset = load_dataset("slprl/TinyStress-15K")
-    data_collate = MyCollate(processor=model.processor, feats_aug=feats_aug)
-    val_loader = DataLoader(StressDataset(dataset["test"], model, feats_aug), batch_size=args.batch_size, collate_fn=data_collate)
+    data_collate = MyCollate(processor=model.processor)
+    val_loader = DataLoader(StressDataset(dataset["test"], model), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     

@@ -19,7 +19,8 @@ from torch.nn.utils.rnn import pad_sequence
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
 from whistress.model.model import WhiStress
 
-from utils import StressDataset, MyCollate, compute_prf_metrics
+from utils import StressDataset, MyCollate
+from metrics import compute_prf_metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -33,13 +34,11 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=-1)
     parser.add_argument("--accumulate_gradient_steps", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
-    parser.add_argument("--feats_aug", type=str, default="default")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     init_lr = args.init_lr
     exp_dir = args.exp_dir
-    feats_aug = args.feats_aug
     if args.pretrained_ckpt_dir:
         pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
     patience = args.patience if args.patience != -1 else args.epochs
@@ -94,9 +93,9 @@ if __name__ == "__main__":
     dataset["train"] = raw_train_dataset["train"]
     dataset["val"] = raw_train_dataset["test"]
     
-    data_collate = MyCollate(processor=model.processor, feats_aug=feats_aug)
-    train_loader = DataLoader(StressDataset(dataset["train"], model, feats_aug), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
-    val_loader = DataLoader(StressDataset(dataset["val"], model, feats_aug), batch_size=args.batch_size, collate_fn=data_collate)
+    data_collate = MyCollate(processor=model.processor)
+    train_loader = DataLoader(StressDataset(dataset["train"], model), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(dataset["val"], model), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     patience_counter = 0

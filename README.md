@@ -127,8 +127,8 @@ This will launch a browser-based UI for trying out the model interactively on yo
 | Paper                 | 91.20     | 90.60  | 90.90 |
 | Dry Run               | 88.84     | 93.31  | 91.02 |
 | └─ without transcription | 88.15     | 94.17  | 91.06 |
-| RP (Reproduced)       | 93.92     | 93.38  | 93.65 |
-| └─ without transcription | 92.46     | 94.39  | 93.14 |
+| RP (Reproduced)       | 92.37     | 93.17  | 92.77 |
+| └─ without transcription | 89.21     | 93.96  | 91.52 |
 
 - **Paper**: Results reported in the original WhiStress paper.  
 - **Dry Run**: Inference using the official pretrained weights without any retraining.  
