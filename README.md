@@ -13,7 +13,7 @@ In addition to the original functionalities, this version includes:
 
 These changes are intended to support custom workflows and reproducibility, while preserving alignment with the original implementation.
 
-If you are interested in the official version, please refer to the original repository and [project page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/).
+If you are interested in the official version, please refer to the [original repository](https://github.com/slp-rl/WhiStress) and [project page](https://pages.cs.huji.ac.il/adiyoss-lab/whistress/).
 
 ## 🔧 Installation
 
@@ -114,7 +114,7 @@ python app_ui.py
 
 This will launch a browser-based UI for trying out the model interactively on your own audio.
 
-## Training
+## 🏋️‍♀️ Training
 
 ```bash
 ./run.sh --stage 1 --gpuid 0
@@ -127,13 +127,13 @@ This will launch a browser-based UI for trying out the model interactively on yo
 | Paper                 | 91.20     | 90.60  | 90.90 |
 | Dry Run               | 88.84     | 93.31  | 91.02 |
 | └─ without transcription | 88.15     | 94.17  | 91.06 |
-| RP (Reproduced)       | 92.37     | 93.17  | 92.77 |
+| RP       | 92.37     | 93.17  | 92.77 |
 | └─ without transcription | 89.21     | 93.96  | 91.52 |
 
 - **Paper**: Results reported in the original WhiStress paper.  
 - **Dry Run**: Inference using the official pretrained weights without any retraining.  
-- **RP (Reproduced)**: Results from retraining the model using the provided `model.py` and corpus.  
-- *without transcription*: Evaluation conducted without using ground-truth transcriptions (i.e., `with_transcription=False` in `calculate_metrics_on_dataset`).
+- **RP**: Results from retraining the model using the provided `model.py` and corpus.  
+- *without transcription*: Evaluation conducted without using ground-truth transcriptions (i.e., `with_transcription=False` in `calculate_metrics_on_dataset`[Link](https://github.com/teinhonglo/WhiStress/blob/main/evaluation_example.py#L79-L84)).
 
 ## Citation
 
