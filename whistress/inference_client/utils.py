@@ -55,6 +55,7 @@ def get_word_emphasis_pairs(
         processor.tokenizer.decode([i], skip_special_tokens=False)
         for i in transcription_preds
     ]
+    
     if filter_special_tokens:
         special_tokens_indices = [
             i

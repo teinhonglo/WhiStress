@@ -18,14 +18,14 @@ gpuid=0
 . ./path.sh
 
 model_tag=$(echo $whisper_tag | sed -e "s/\//-/g")
-exp_dir=exp/baseline_${model_tag}_ep${epochs}_b${batch_size}a${accumulate_gradient_steps}_lr${init_lr}_p${patience}
+exp_dir=exp/wordstress_${model_tag}_ep${epochs}_b${batch_size}a${accumulate_gradient_steps}_lr${init_lr}_p${patience}
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "CUDA_VISIBLE_DEVICES=$gpuid python train.py --whisper_tag $whisper_tag --epochs $epochs --init_lr ${init_lr} --batch_size $batch_size --exp_dir $exp_dir"
 
     if [ ! -f $exp_dir/.done ]; then
         CUDA_VISIBLE_DEVICES=$gpuid \
-            python train.py \
+            python train_phn.py \
                 --whisper_tag $whisper_tag \
                 --epochs $epochs \
                 --init_lr ${init_lr} \

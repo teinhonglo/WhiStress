@@ -5,11 +5,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 import numpy as np
-import nltk
 
-# nltk 初始化
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
+from e2e_stt.nlp_models import NlpModel
 
 def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
     df_copy = df.copy()
@@ -21,15 +18,11 @@ def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
 
     grouped = df_copy.groupby(["bin", "type"], observed=False).size().unstack(fill_value=0)
 
-    for col in ["TP", "FN", "TN", "FP"]:
-        if col not in grouped.columns:
-            grouped[col] = 0
-
     grouped["FNR"] = grouped["FN"] / (grouped["FN"] + grouped["TP"]).replace(0, np.nan)
     grouped["FPR"] = grouped["FP"] / (grouped["FP"] + grouped["TN"]).replace(0, np.nan)
 
     plt.figure(figsize=(8, 5))
-    grouped[["FNR", "FPR"]].plot(marker="o", figsize=(8, 5))
+    grouped[["FNR", "FPR"]].plot(kind="bar", stacked=False, colormap="Set2", figsize=(8, 5))
     plt.title(f"FNR / FPR by {feature}")
     plt.xlabel(feature)
     plt.ylabel("Rate")
@@ -67,11 +60,12 @@ def plot_error_count_by(df, feature, save_dir, bins=None, labels=None):
     plt.close()
     print(f"✅ Saved plot: {output_path}")
 
-def flatten_words_with_pos(error_cases):
+def flatten_words_with_pos(error_cases, nlp_model):
     rows = []
     for utt in error_cases:
-        words = [w["word"] for w in utt["words"]]
-        pos_tags = nltk.pos_tag(words)
+        words = " ".join([w["word"] for w in utt["words"]])
+        vp_feats = nlp_model.vocab_profile_feats(words)
+        pos_feats = vp_feats["pos_list"]
 
         for i, word in enumerate(utt["words"]):
             rows.append({
@@ -84,7 +78,7 @@ def flatten_words_with_pos(error_cases):
                 "utt_len": utt["utt_len"],
                 "utt_duration": utt["utt_duration"],
                 "speaking_rate": utt["speaking_rate"],
-                "pos": pos_tags[i][1]  # e.g., 'NN', 'VBZ', etc.
+                "pos": pos_feats[i]
             })
     return pd.DataFrame(rows)
 
@@ -93,6 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--error_case_path", type=str, default="evaluation_results/whistress_error_analysis.json", help="Path to whistress_error_analysis.json")
     parser.add_argument("--save_fig_dir", type=str, default="evaluation_results/figs", help="Directory to save figures")
     args = parser.parse_args()
+    
 
     error_case_path = Path(args.error_case_path)
     save_fig_dir = Path(args.save_fig_dir)
@@ -101,9 +96,9 @@ if __name__ == "__main__":
     with open(error_case_path, "r") as f:
         error_cases = json.load(f)
 
-    df = flatten_words_with_pos(error_cases)
+    nlp_model = NlpModel()
+    df = flatten_words_with_pos(error_cases, nlp_model)
 
-    # 原本 feature 圖
     plot_error_count_by(df, "syllable_count", save_fig_dir)
     plot_error_count_by(df, "word_len", save_fig_dir, bins=[0, 3, 6, 10, 20], labels=["1-3", "4-6", "7-10", "11+"])
     plot_error_count_by(df, "speaking_rate", save_fig_dir, bins=[0, 2, 4, 6, 10], labels=["0-2", "2-4", "4-6", "6+"])
@@ -112,6 +107,5 @@ if __name__ == "__main__":
     plot_fnr_fpr_by(df, "word_len", save_fig_dir, bins=[0, 3, 6, 10, 20], labels=["1-3", "4-6", "7-10", "11+"])
     plot_fnr_fpr_by(df, "speaking_rate", save_fig_dir, bins=[0, 2, 4, 6, 10], labels=["0-2", "2-4", "4-6", "6+"])
 
-    # ➕ POS 分析圖
     plot_error_count_by(df, "pos", save_fig_dir)
     plot_fnr_fpr_by(df, "pos", save_fig_dir)

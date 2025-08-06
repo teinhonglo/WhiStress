@@ -21,11 +21,15 @@ from whistress.model.model import WhiStress
 import os
 from pathlib import Path
 import re
+import string
 import nltk
 nltk.download('cmudict')
 from nltk.corpus import cmudict
-
 cmu = cmudict.dict()
+
+from g2p_en import G2p
+
+g2p = G2p()
 
 def build_phone2id_no_stress(path="data/local/phones.txt"):
     path = Path(path)
@@ -43,12 +47,12 @@ def build_phone2id_no_stress(path="data/local/phones.txt"):
 
         # build from cmudict
         all_phones = set()
-        for word in cmu:
-            for pron in cmu[word]:
-                for ph in pron:
-                    ph_no_stress = re.sub(r"\d", "", ph)
-                    all_phones.add(ph_no_stress)
-
+        for word, phone_list in cmudict.dict().items():
+            for phones in phone_list:
+                for ph in phones:
+                    ph = re.sub(r'\d$', '', ph)
+                    all_phones.add(ph)
+        
         phone_list = sorted(list(all_phones))
         phone2id = {ph: idx for idx, ph in enumerate(phone_list)}
 
@@ -64,14 +68,23 @@ def add_phone_features(transcription, phone_dict):
     phone_ids = []
     phone_stress = []
     offset = 0
+    transcription = transcription.translate(str.maketrans('', '', string.punctuation))
     
-    for word in transcription.lower().split():
-        phone_list = cmu.get(word)
-        
-        if not phone_list:
+    transcription_phones = []
+    word_phones = []
+    for phone in g2p(transcription):
+        if phone == " ":
+            transcription_phones.append([p for p in word_phones])
+            word_phones = []
             continue
         
-        phone_list = phone_list[0]
+        word_phones.append(phone)
+    transcription_phones.append([p for p in word_phones])
+    
+    words = transcription.lower().split()
+    assert len(words) == len(transcription_phones)
+    
+    for phone_list in transcription_phones:
         
         for phn in phone_list:
             phones.append(phn)
@@ -79,10 +92,13 @@ def add_phone_features(transcription, phone_dict):
             phone_ids.append(phone_dict[phn_no_stress])
             
             if phn[-1].isdigit():
-                phone_stress.append(int(phn[-1]))
+                stress_label = 1 if int(phn[-1]) > 0 else 0
+                phone_stress.append(stress_label)
             else:
                 phone_stress.append(0)
-    
+        if len(phone_ids) == 0:
+            print(transcription)
+
     return phones, phone_ids, phone_stress
 
 def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
@@ -141,7 +157,7 @@ def preprocess(example, model, phone_dict):
     token_labels = token_labels[1:] + [-100]
     
     # 6. Get phone sequence from transcription
-    phones, phone_ids, phone_stress = add_phone_features(transcription, phone_dict)
+    phones, phone_ids, phone_labels_head = add_phone_features(transcription, phone_dict)
 
     # 7. store results
     example["decoder_input_ids"] = input_ids
@@ -149,7 +165,7 @@ def preprocess(example, model, phone_dict):
     example["word_ids"] = word_ids
     example["phones"] = phones
     example["phone_ids"] = phone_ids
-    example["phone_stress"] = phone_stress
+    example["phone_labels_head"] = phone_labels_head
     
     return example
 
@@ -174,7 +190,7 @@ class StressDataset(torch.utils.data.Dataset):
             "word_ids": item["word_ids"],
             "phones": item["phones"],
             "phone_ids": item["phone_ids"],
-            "phone_stress": item["phone_stress"],
+            "phone_labels_head": item["phone_labels_head"],
             "id": item["id"]
         }
 
@@ -184,11 +200,11 @@ class MyCollate:
 
     def __call__(self, batch):
         
-        decoder_input_ids = [torch.tensor(b["decoder_input_ids"]) for b in batch]
-        word_ids = [torch.tensor(b["word_ids"]) for b in batch]
-        labels_head = [torch.tensor(b["labels_head"]) for b in batch]
-        phone_ids = [torch.tensor(b["phone_ids"]) for b in batch]
-        phone_stress = [torch.tensor(b["phone_stress"]) for b in batch]
+        decoder_input_ids = [torch.tensor(b["decoder_input_ids"], dtype=torch.long) for b in batch]
+        word_ids = [torch.tensor(b["word_ids"], dtype=torch.long) for b in batch]
+        labels_head = [torch.tensor(b["labels_head"], dtype=torch.long) for b in batch]
+        phone_ids = [torch.tensor(b["phone_ids"], dtype=torch.long) for b in batch]
+        phone_labels_head = [torch.tensor(b["phone_labels_head"], dtype=torch.long) for b in batch]
             
         return {
             "audio": [b["audio"] for b in batch],
@@ -196,8 +212,8 @@ class MyCollate:
             "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "word_ids": pad_sequence(word_ids, batch_first=True, padding_value=-100),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
-            "phone_ids": pad_sequence(phone_ids, batch_first=True, padding_value=-100),
-            "phone_stress": pad_sequence(phone_stress, batch_first=True, padding_value=-100),
+            "phone_ids": pad_sequence(phone_ids, batch_first=True, padding_value=-1),
+            "phone_labels_head": pad_sequence(phone_labels_head, batch_first=True, padding_value=-100),
             "transcription": [b["transcription"] for b in batch],
             "stress_pattern_binary": [b["stress_pattern_binary"] for b in batch],
             "phones": [b["phones"] for b in batch],
@@ -206,7 +222,7 @@ class MyCollate:
 
 if __name__ == "__main__":
     phone_dict = build_phone2id_no_stress()
-    phones, phone_ids, phone_stress = add_phone_features("Nice to meet you", phone_dict)
+    phones, phone_ids, phone_stress = add_phone_features("Nice to meet you. dictionary", phone_dict)
     print(phone_dict)
     print(phones)
     print(phone_ids)

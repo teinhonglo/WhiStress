@@ -24,6 +24,17 @@ class CustomModelOutput(BaseModelOutput):
     whisper_logits: torch.FloatTensor = None
     preds: Optional[torch.Tensor] = None
 
+@dataclass
+class CustomPhnModelOutput(BaseModelOutput):
+    loss: Optional[torch.FloatTensor] = None
+    loss_main: Optional[torch.FloatTensor] = None
+    loss_phone: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    head_preds: torch.FloatTensor = None
+    labels_head: Optional[torch.FloatTensor] = None
+    whisper_logits: torch.FloatTensor = None
+    preds: Optional[torch.Tensor] = None
+    phone_stress_preds: Optional[torch.Tensor] = None
 
 # Define a new head (e.g., a classification layer)
 class LinearHead(nn.Module):
@@ -327,7 +338,7 @@ class WhiStressPhn(PreTrainedModel):
         layer_for_head: Optional[int] = None,
         whisper_backbone_name="openai/whisper-small.en",
         class_weights = [1.0, 2.33],
-        num_phone_ids=39
+        num_phones=39
     ):
         super().__init__(config=config, )
         self.whisper_backbone_name = whisper_backbone_name
@@ -344,7 +355,7 @@ class WhiStressPhn(PreTrainedModel):
         self.additional_decoder_block = WhisperDecoderLayer(config)
         self.classifier = FCNN(input_dim, output_dim)
         # add additional decoder block using the torch embedding layer & transformer decoder
-        self.phone_embed = nn.Embedding(num_embeddings=num_phone_ids + 1, embedding_dim=config.d_model)
+        self.phone_embed = nn.Embedding(num_embeddings=num_phones + 1, embedding_dim=config.d_model)
         
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=config.d_model,
@@ -359,6 +370,7 @@ class WhiStressPhn(PreTrainedModel):
         # add weighted loss for CE
         class_weights = torch.tensor(class_weights)
         self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100, weight=class_weights)
+        self.phone_loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
         self.layer_for_head = -1 if layer_for_head is None else layer_for_head
 
     def to(self, device: str = ("cuda" if torch.cuda.is_available() else "cpu")):
@@ -471,7 +483,7 @@ class WhiStressPhn(PreTrainedModel):
         preds = head_probs.argmax(dim=-1).to(device)
         # Calculate custom loss if labels are provided
          
-        loss = None
+        loss_main = None
         if labels_head is not None:
             preds = torch.where(
                 torch.isin(
@@ -481,11 +493,12 @@ class WhiStressPhn(PreTrainedModel):
                 preds,
             )
             # CrossEntropyLoss for the custom head
-            loss = self.loss_fct(
+            loss_main = self.loss_fct(
                 head_logits.reshape(-1, head_logits.size(-1)), labels_head.reshape(-1)
             )
         
-        if phone_ids is None:
+        loss_phn = None
+        if phone_ids is not None:
             # pass the phone_ids through the embed layer
             phone_embed = self.phone_embed(phone_ids + 1)
             phone_decoder_block_outputs = self.phone_decoder(
@@ -503,17 +516,24 @@ class WhiStressPhn(PreTrainedModel):
                 phone_stress_preds,
             )
             # CrossEntropyLoss for the custom head
-            loss_phn = self.loss_fct(
-                head_logits.reshape(-1, phone_stress_logits.size(-1)), phone_labels_head.reshape(-1)
+            loss_phone = self.phone_loss_fct(
+                phone_stress_logits.reshape(-1, phone_stress_logits.size(-1)), phone_labels_head.reshape(-1)
             )
-            loss = loss_phn + loss
+            loss = loss_phone + loss_main
+        else:
+            loss = loss_main
+            loss_phone=None
+            phone_stress_preds=None
         
-        return CustomModelOutput(
+        return CustomPhnModelOutput(
             logits=head_logits,
             labels_head=labels_head,
             whisper_logits=backbone_outputs.logits,
             loss=loss,
+            loss_main=loss_main,
+            loss_phone=loss_phone,
             preds=preds,
+            phone_stress_preds=phone_stress_preds,
         )
 
     def generate(
