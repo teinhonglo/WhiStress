@@ -34,6 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=-1)
     parser.add_argument("--accumulate_gradient_steps", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
+    parser.add_argument("--model_type", type=str, default="whistress_phn")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
@@ -66,12 +67,14 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     os.environ['PYTHONHASHSEED'] = str(seed)
 
-    hyper_params = {"epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "init_lr": args.init_lr,
-                    "layer_for_head": args.layer_for_head,
-                    "whisper_tag": args.whisper_tag
-                    }
+    hyper_params = {
+        "model_type": args.model_type,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "init_lr": args.init_lr,
+        "layer_for_head": args.layer_for_head,
+        "whisper_tag": args.whisper_tag
+    }
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

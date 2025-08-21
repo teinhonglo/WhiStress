@@ -4,7 +4,7 @@ import librosa
 import numpy as np
 import pathlib
 from torch.nn import functional as F
-from ..model import WhiStress
+from ..model import WhiStress, WhiStressPhn
 import os
 import json
 
@@ -24,14 +24,25 @@ def get_loaded_model(device="cuda", metadata=None):
     if metadata is None:
         whisper_model_name = f"openai/whisper-small.en"
         layer_for_head=9
+        model_type = "baseline"
     else:
         whisper_model_name = metadata["whisper_tag"]
         layer_for_head=metadata["layer_for_head"]
+        model_type = metadata.get("model_type", "baseline")
     
     whisper_config = WhisperConfig()
-    whistress_model = WhiStress(
-        whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
-    ).to(device)
+    
+    if model_type == "baseline":
+        whistress_model = WhiStress(
+            whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
+        ).to(device)
+    elif model_type == "whistress_phn":
+        whistress_model = WhiStressPhn(
+            whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name, num_phones=39
+        ).to(device)
+    else:
+        raise ValueError(f"model_type {model_type} is not found.")
+        
     whistress_model.processor.tokenizer.model_input_names = [
         "input_ids",
         "attention_mask",

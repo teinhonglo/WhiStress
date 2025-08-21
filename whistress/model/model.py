@@ -656,4 +656,4 @@ class WhiStressPhn(PreTrainedModel):
         )
 
     def __str__(self):
-        return "WhiStress"
+        return "WhiStressPhn"

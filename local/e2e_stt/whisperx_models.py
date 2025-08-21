@@ -5,7 +5,6 @@ import soundfile
 from collections import defaultdict
 from tqdm import tqdm
 from g2p_en import G2p
-from whisper.normalizers import EnglishTextNormalizer
 import whisperx
 from whisper.tokenizer import get_tokenizer
 import string
@@ -97,7 +96,6 @@ class SpeechModel(object):
         # alignment model
         self.model_a, self.metadata = whisperx.load_align_model(language_code=self.language, device=self.device)
         # english std
-        self.eng_std = EnglishTextNormalizer()
         self.sample_rate = 16000
 
     def set_initial_prompt(self, initial_prompt=None):

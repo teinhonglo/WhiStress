@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from e2e_stt.nlp_models import NlpModel
+nlp_model = NlpModel()
 
 def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
     df_copy = df.copy()
@@ -16,46 +17,45 @@ def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
     else:
         df_copy["bin"] = df_copy[feature]
 
+    # 計算 FNR/FPR
     grouped = df_copy.groupby(["bin", "type"], observed=False).size().unstack(fill_value=0)
-
     grouped["FNR"] = grouped["FN"] / (grouped["FN"] + grouped["TP"]).replace(0, np.nan)
     grouped["FPR"] = grouped["FP"] / (grouped["FP"] + grouped["TN"]).replace(0, np.nan)
 
-    plt.figure(figsize=(8, 5))
-    grouped[["FNR", "FPR"]].plot(kind="bar", stacked=False, colormap="Set2", figsize=(8, 5))
+    # 計算 count 並依 count 排序
+    count_by_bin = df_copy.groupby("bin", observed=False).size()
+    sorted_index = count_by_bin.sort_values(ascending=False).index
+
+    # 根據排序重新排列
+    grouped = grouped.loc[sorted_index]
+    count_by_bin = count_by_bin.loc[sorted_index]
+
+    # 建立圖
+    fig, ax1 = plt.subplots(figsize=(8, 5))
+
+    # 左軸：FNR / FPR 柱狀圖
+    grouped[["FNR", "FPR"]].plot(kind="bar", ax=ax1, stacked=False, colormap="Set2", width=0.8)
+    ax1.set_ylabel("FNR / FPR Rate")
+    ax1.set_ylim(0, 1)
+    ax1.set_xlabel(feature)
+    ax1.set_xticks(range(len(grouped.index)))
+    ax1.set_xticklabels(grouped.index, rotation=45)
+    ax1.grid(True, axis="y")
+
+    # 右軸：Count 折線圖
+    ax2 = ax1.twinx()
+    ax2.plot(range(len(count_by_bin)), count_by_bin.values, color='black', marker='o', linestyle='-', label='Count')
+    ax2.set_ylabel("Sample Count")
+    ax2.set_ylim(0, max(count_by_bin.values) * 1.1)
+
+    # 合併 Legend
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right")
+
     plt.title(f"FNR / FPR by {feature}")
-    plt.xlabel(feature)
-    plt.ylabel("Rate")
-    plt.ylim(0, 1)
-    plt.grid(True)
-    plt.xticks(rotation=45)
     plt.tight_layout()
     output_path = save_dir / f"fnr_fpr_by_{feature}.png"
-    plt.savefig(output_path)
-    plt.close()
-    print(f"✅ Saved plot: {output_path}")
-
-def plot_error_count_by(df, feature, save_dir, bins=None, labels=None):
-    df_copy = df.copy()
-
-    if bins:
-        df_copy["bin"] = pd.cut(df_copy[feature], bins=bins, labels=labels, include_lowest=True)
-    else:
-        df_copy["bin"] = df_copy[feature]
-
-    df_filtered = df_copy[df_copy["type"].isin(["FP", "FN"])]
-
-    grouped = df_filtered.groupby(["bin", "type"], observed=False).size().reset_index(name="count")
-    pivoted = grouped.pivot(index="bin", columns="type", values="count").fillna(0)
-
-    plt.figure(figsize=(8, 5))
-    pivoted.plot(kind="bar", stacked=False, colormap="Set2", figsize=(8, 5))
-    plt.title(f"FP / FN Count by {feature}")
-    plt.xlabel(feature)
-    plt.ylabel("Count")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    output_path = save_dir / f"fp_fn_count_by_{feature}.png"
     plt.savefig(output_path)
     plt.close()
     print(f"✅ Saved plot: {output_path}")
@@ -99,13 +99,8 @@ if __name__ == "__main__":
     nlp_model = NlpModel()
     df = flatten_words_with_pos(error_cases, nlp_model)
 
-    plot_error_count_by(df, "syllable_count", save_fig_dir)
-    plot_error_count_by(df, "word_len", save_fig_dir, bins=[0, 3, 6, 10, 20], labels=["1-3", "4-6", "7-10", "11+"])
-    plot_error_count_by(df, "speaking_rate", save_fig_dir, bins=[0, 2, 4, 6, 10], labels=["0-2", "2-4", "4-6", "6+"])
-
     plot_fnr_fpr_by(df, "syllable_count", save_fig_dir)
     plot_fnr_fpr_by(df, "word_len", save_fig_dir, bins=[0, 3, 6, 10, 20], labels=["1-3", "4-6", "7-10", "11+"])
     plot_fnr_fpr_by(df, "speaking_rate", save_fig_dir, bins=[0, 2, 4, 6, 10], labels=["0-2", "2-4", "4-6", "6+"])
 
-    plot_error_count_by(df, "pos", save_fig_dir)
     plot_fnr_fpr_by(df, "pos", save_fig_dir)
