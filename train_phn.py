@@ -97,8 +97,8 @@ if __name__ == "__main__":
     dataset["val"] = raw_train_dataset["test"]
     
     data_collate = MyCollate(processor=model.processor)
-    train_loader = DataLoader(StressDataset(dataset["train"], model), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
-    val_loader = DataLoader(StressDataset(dataset["val"], model), batch_size=args.batch_size, collate_fn=data_collate)
+    train_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["train"], model=model, processed_dir="data/train"), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["val"], model=model, processed_dir="data/valid"), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     patience_counter = 0

@@ -205,9 +205,27 @@ def preprocess(example, model, phone_dict):
     return example
 
 class StressDataset(torch.utils.data.Dataset):
-    def __init__(self, hf_dataset, model):
+    def __init__(self, hf_dataset_or_path, model, processed_dir="data/processed", num_proc=1):
         self.phone_dict = build_phone2id_no_stress()
-        self.dataset = hf_dataset.map(lambda x: preprocess(x, model=model, phone_dict=self.phone_dict), num_proc=1)
+
+        # 如果有快取就直接讀
+        if os.path.exists(processed_dir):
+            self.dataset = load_from_disk(processed_dir)
+        else:
+            # 如果給的是路徑 → 先讀 raw dataset
+            if isinstance(hf_dataset_or_path, str):
+                from datasets import load_from_disk
+                hf_dataset = load_from_disk(hf_dataset_or_path)
+            else:
+                hf_dataset = hf_dataset_or_path
+
+            # 做 map
+            self.dataset = hf_dataset.map(
+                lambda x: preprocess(x, model=model, phone_dict=self.phone_dict),
+                num_proc=num_proc
+            )
+            # 存快取
+            self.dataset.save_to_disk(processed_dir)
 
     def __len__(self):
         return len(self.dataset)
