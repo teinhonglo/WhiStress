@@ -64,8 +64,13 @@ def flatten_words_with_pos(error_cases, nlp_model):
     rows = []
     for utt in error_cases:
         words = " ".join([w["word"] for w in utt["words"]])
-        vp_feats = nlp_model.vocab_profile_feats(words)
-        pos_feats = vp_feats["pos_list"]
+        doc = nlp_model.get_doc(words)
+
+        # Workaround: Remove Punctuation and some particles from pos_feats so that pos_feats align with utt["words"]
+        words = [word for sent in doc.sentences for word in sent.words]
+        words = list(filter(lambda x: x.upos != "PUNCT" and x.text != "n't" and x.text[0] != "'", words))
+        pos_feats = [word.upos for word in words]
+        assert len(pos_feats) == len(utt["words"]), f"Length mismatch: POS {len(pos_feats)} vs WORDS {len(utt['words'])}"
 
         for i, word in enumerate(utt["words"]):
             rows.append({

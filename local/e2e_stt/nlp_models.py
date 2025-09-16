@@ -146,7 +146,9 @@ class NlpModel(object):
         
         return nlp_feats
        
-  
+    def get_doc(self, text):
+        doc = self.nlp_tokenize(text)
+        return doc
 if __name__ == '__main__':
     text = "I agree with the statement. We had many holidays, which is longer than others. Most of us were planning to find a part-time job in order to kill the boring time while we got the news. So it was the same with me.  My friends had work experience and had a more independent life. They are willing to share their interesting work experience with me. In their work life, they met many difficulties. They would try to do something only they are. Different kinds of setbacks made them more strong and going easy on everything afterwards.  I feel the sound of a shampoo."
 
