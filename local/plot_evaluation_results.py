@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 
 from e2e_stt.nlp_models import NlpModel
-nlp_model = NlpModel()
 
 def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
     df_copy = df.copy()
@@ -64,8 +63,9 @@ def flatten_words_with_pos(error_cases, nlp_model):
     rows = []
     for utt in error_cases:
         words = " ".join([w["word"] for w in utt["words"]])
-        vp_feats = nlp_model.vocab_profile_feats(words)
+        vp_feats = nlp_model.vocab_profile_feats(words.split())
         pos_feats = vp_feats["pos_list"]
+        assert len(words.split()) == len(pos_feats)
 
         for i, word in enumerate(utt["words"]):
             rows.append({
@@ -96,7 +96,7 @@ if __name__ == "__main__":
     with open(error_case_path, "r") as f:
         error_cases = json.load(f)
 
-    nlp_model = NlpModel()
+    nlp_model = NlpModel(tokenize_pretokenized=True)
     df = flatten_words_with_pos(error_cases, nlp_model)
 
     plot_fnr_fpr_by(df, "syllable_count", save_fig_dir)

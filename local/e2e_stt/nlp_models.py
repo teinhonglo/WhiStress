@@ -59,6 +59,7 @@ class NlpModel(object):
                 #cefr_dict_path="/share/nas167/teinhonglo/AcousticModel/spoken_test/corpus/speaking/CEFR-J_Wordlist_Ver1.6_with_C1C2.xlsx"):
         
         self.nlp_tokenize = stanza.Pipeline(lang='en', processors='tokenize,mwt,pos,lemma,depparse', use_gpu='False', tokenize_pretokenized=tokenize_pretokenized)
+        self.tokenize_pretokenized = tokenize_pretokenized
         self.cefr_dict = self.__build_cefr_dict(cefr_dict_path)
         self.cefr_levels = ["a1", "a2", "b1", "b2"]
         self.pos_tags = ["ADJ", "ADP", "ADV", "AUX", 
@@ -95,7 +96,11 @@ class NlpModel(object):
         mor_list = []
         dep_list = []
         
-        doc = self.nlp_tokenize(text.lower())
+        if self.tokenize_pretokenized:
+            doc = self.nlp_tokenize([text])
+        else:
+            doc = self.nlp_tokenize(text.lower())
+        
         hit_dict = defaultdict(dict)
         
         for si, sent in enumerate(doc.sentences):
