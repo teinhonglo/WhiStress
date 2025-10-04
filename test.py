@@ -65,7 +65,7 @@ if __name__ == "__main__":
 
     dataset = load_dataset("slprl/TinyStress-15K")
     data_collate = MyCollate(processor=model.processor)
-    val_loader = DataLoader(StressDataset(dataset["test"], model), batch_size=args.batch_size, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["test"], model=model, processed_dir="data/test"), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     

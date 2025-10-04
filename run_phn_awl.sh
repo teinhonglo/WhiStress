@@ -13,26 +13,28 @@ accumulate_gradient_steps=1
 patience=-1
 whisper_tag="openai/whisper-small.en"
 model_type=wordstress
+lambda_awl=1.0
 gpuid=0
 
 . ./local/parse_options.sh
 . ./path.sh
 
 model_tag=$(echo $whisper_tag | sed -e "s/\//-/g")
-exp_dir=exp/${model_type}_${model_tag}_ep${epochs}_b${batch_size}a${accumulate_gradient_steps}_lr${init_lr}_p${patience}
+exp_dir=exp/${model_type}_${model_tag}_ep${epochs}_b${batch_size}a${accumulate_gradient_steps}_lr${init_lr}_p${patience}_awl$lambda_awl
 
 if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
     echo "CUDA_VISIBLE_DEVICES=$gpuid python train.py --whisper_tag $whisper_tag --epochs $epochs --init_lr ${init_lr} --batch_size $batch_size --exp_dir $exp_dir"
 
     if [ ! -f $exp_dir/.done ]; then
         CUDA_VISIBLE_DEVICES=$gpuid \
-            python train_phn.py \
+            python train_phn_awl.py \
                 --whisper_tag $whisper_tag \
                 --epochs $epochs \
                 --init_lr ${init_lr} \
                 --batch_size $batch_size \
                 --accumulate_gradient_steps $accumulate_gradient_steps \
                 --patience $patience \
+                --lambda_awl $lambda_awl \
                 --model_type $model_type \
                 --exp_dir $exp_dir
     fi

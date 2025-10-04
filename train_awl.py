@@ -4,6 +4,7 @@ import argparse
 import json
 import random
 import numpy as np
+from collections import defaultdict
 from dataclasses import dataclass, field
 import wandb
 
@@ -22,6 +23,54 @@ from whistress.model.model import WhiStress
 from utils import StressDataset, MyCollate
 from metrics import compute_prf_metrics
 
+def compute_adaptive_weighted_loss(logits, labels, word_ids_batch):
+    B, T, _ = logits.shape
+    probs = F.softmax(logits, dim=-1)[..., 1]  # (B, T) — probability of class 1 (stressed) per token
+
+    total_loss = 0.0
+    count = 0
+
+    for b in range(B):  # loop over each sample in the batch
+        word2token = defaultdict(list)
+
+        # Step 0: Group token indices by word ID (excluding special tokens and paddings)
+        for t, wid in enumerate(word_ids_batch[b]):
+            if wid != -100 and labels[b, t] != -100 and labels[b, t] == 1:
+                word2token[wid].append(t)
+
+        # Step 1–3: For each word/syllable group
+        for token_indices in word2token.values():
+            p = probs[b, token_indices]  # get predicted probabilities for all tokens in the word
+
+            if len(p) == 0:
+                continue  # skip if no valid token
+
+            # === Step 1: Adaptive Weight ===
+            # ω_α = |1 - ∑p_i| — how much the total predicted stress deviates from 1
+            omega = torch.abs(1.0 - p.sum())
+
+            # === Step 2: Log Penalty Term ===
+            # Identify the token with highest predicted stress
+            i_max = torch.argmax(p)
+
+            # First term: log(p_{i_max})
+            penalty = torch.log(p[i_max] + 1e-8)  # add small constant to avoid log(0)
+
+            # Remaining terms: sum log(1 - p_i) for i ≠ i_max
+            for j, p_j in enumerate(p):
+                if j != i_max:
+                    penalty += torch.log(1.0 - p_j + 1e-8)
+
+            # === Step 3: Final WP = ω_α * penalty
+            word_loss = omega * penalty
+
+            total_loss += word_loss
+            count += 1
+
+    # Return mean loss over valid words (or 0.0 if none)
+    return total_loss / count if count > 0 else torch.tensor(0.0, device=logits.device)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--whisper_tag", type=str, default="openai/whisper-small.en")
@@ -35,11 +84,14 @@ if __name__ == "__main__":
     parser.add_argument("--accumulate_gradient_steps", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
     parser.add_argument("--model_type", type=str, default="baseline")
+    parser.add_argument("--lambda_awl", type=float, default=0.5)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     init_lr = args.init_lr
     exp_dir = args.exp_dir
+    lambda_awl = args.lambda_awl
+    
     if args.pretrained_ckpt_dir:
         pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
     patience = args.patience if args.patience != -1 else args.epochs
@@ -107,15 +159,24 @@ if __name__ == "__main__":
         model.train()
         total_loss = 0.0
         train_all_preds, train_all_labels = [], []
+        total_loss_main = 0.0
+        total_loss_awl = 0.0
+        
         for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
             audio_array = [x["array"] for x in batch["audio_input"]]
 
             input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
             decoder_input_ids = batch["decoder_input_ids"].to(device)
             labels = batch["labels_head"].to(device)
+            word_ids = batch["word_ids"]
 
             output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, labels_head=labels)
+            loss_main = output.loss
+
+            loss_awl = compute_adaptive_weighted_loss(output.logits, labels, word_ids)
+            loss = loss_main + lambda_awl * loss_awl
             loss = output.loss / args.accumulate_gradient_steps
+
             loss.backward()
             
             if (step + 1) % args.accumulate_gradient_steps == 0:
@@ -130,10 +191,13 @@ if __name__ == "__main__":
                     train_all_preds.append(p)
                     train_all_labels.append(l)
             
+            total_loss_main += loss_main.item()
+            total_loss_awl += loss_awl.item()
             total_loss += loss.item()
 
         train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
-        print(f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
+        print(f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, ML: {total_loss_main / len(train_loader):.4f}, AWL: {total_loss_awl / len(train_loader):.4f}")
+        print(f"Train Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
 
         # === Validation ===
         model.eval()

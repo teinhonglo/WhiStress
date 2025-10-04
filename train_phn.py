@@ -34,6 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=-1)
     parser.add_argument("--accumulate_gradient_steps", type=int, default=1)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
+    parser.add_argument("--model_type", type=str, default="baseline")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
@@ -66,12 +67,14 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     os.environ['PYTHONHASHSEED'] = str(seed)
 
-    hyper_params = {"epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "init_lr": args.init_lr,
-                    "layer_for_head": args.layer_for_head,
-                    "whisper_tag": args.whisper_tag
-                    }
+    hyper_params = {
+        "model_type": args.model_type,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "init_lr": args.init_lr,
+        "layer_for_head": args.layer_for_head,
+        "whisper_tag": args.whisper_tag
+    }
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -94,15 +97,15 @@ if __name__ == "__main__":
     dataset["val"] = raw_train_dataset["test"]
     
     data_collate = MyCollate(processor=model.processor)
-    train_loader = DataLoader(StressDataset(dataset["train"], model), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
-    val_loader = DataLoader(StressDataset(dataset["val"], model), batch_size=args.batch_size, collate_fn=data_collate)
+    train_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["train"], model=model, processed_dir="data/train"), batch_size=args.batch_size, shuffle=True, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["val"], model=model, processed_dir="data/valid"), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     patience_counter = 0
 
     for epoch in range(args.epochs):
         model.train()
-        total_loss, total_main_loss, total_phone_loss = 0.0, 0.0, 0.0
+        total_loss, total_loss_main, total_loss_phone = 0.0, 0.0, 0.0
         train_all_preds, train_all_labels = [], []
         for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
             audio_array = [x["array"] for x in batch["audio_input"]]
@@ -132,11 +135,11 @@ if __name__ == "__main__":
                     train_all_labels.append(l)
             
             total_loss += loss.item()
-            total_main_loss += loss_main.item()
-            total_phone_loss += loss_phone.item()
+            total_loss_main += loss_main.item()
+            total_loss_phone += loss_phone.item()
 
         train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
-        print(f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, Main Loss: {total_main_loss / len(train_loader):.4f}, Phn Loss: {total_phone_loss / len(train_loader):.4f}, Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
+        print(f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, Main Loss: {total_loss_main / len(train_loader):.4f}, Phn Loss: {total_loss_phone / len(train_loader):.4f}, Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
 
         # === Validation ===
         model.eval()

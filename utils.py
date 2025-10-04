@@ -9,7 +9,7 @@ import wandb
 
 import torch
 from torch.utils.data import DataLoader
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from transformers import WhisperProcessor, WhisperTokenizerFast, WhisperConfig, AdamW
 from tqdm import tqdm
 import torch.nn.functional as F
@@ -28,8 +28,15 @@ from nltk.corpus import cmudict
 cmu = cmudict.dict()
 
 from g2p_en import G2p
+from local.e2e_stt.nlp_models import NlpModel
+
+POS = ["ADJ", "ADP", "ADV", "AUX", "CCONJ", "DET", 
+       "INTJ", "NOUN", "NUM", "PART", "PRON", "PROPN", 
+       "PUNCT", "SCONJ", "SYM", "VERB", "X"]
+pos_map_dict = {p: i for i, p in enumerate(POS)}
 
 g2p = G2p()
+nlp_model = NlpModel(tokenize_pretokenized=True)
 
 def build_phone2id_no_stress(path="data/local/phones.txt"):
     path = Path(path)
@@ -131,12 +138,17 @@ def preprocess(example, model, phone_dict):
         model.processor.tokenizer.decode([tid], skip_special_tokens=False)
         for tid in input_ids
     ]
+    
+    vp_feats = nlp_model.vocab_profile_feats(transcription.split())
+    pos_feats = vp_feats["pos_list"]
 
     # 4. align word-level binary to token-level
     token_labels = []
+    token_pos = []
     word_ids = []
     word_idx = 0
     first_real_token = True
+    
     for token in decoded_tokens:
         if token in model.processor.tokenizer.all_special_tokens:
             token_labels.append(-100)
@@ -145,12 +157,14 @@ def preprocess(example, model, phone_dict):
         if token.startswith(" ") or first_real_token:  # new word
             label = binary[word_idx] if word_idx < len(binary) else 0
             token_labels.append(label)
+            token_pos.append(pos_map_dict[pos_feats[word_idx]])
+            word_ids.append(word_idx)
             word_idx += 1
             first_real_token = False
-            word_ids.append(word_idx)
         else:  # subword
             label = binary[word_idx - 1] if word_idx - 1 < len(binary) else 0
             token_labels.append(label)
+            token_pos.append(pos_map_dict[pos_feats[word_idx -1]])
             word_ids.append(word_idx -1)
 
     # 5. LEFT SHIFT → align label with logits[t] = prediction of token[t+1]
@@ -163,6 +177,7 @@ def preprocess(example, model, phone_dict):
     example["decoder_input_ids"] = input_ids
     example["labels_head"] = token_labels
     example["word_ids"] = word_ids
+    example["token_pos"] = token_pos
     example["phones"] = phones
     example["phone_ids"] = phone_ids
     example["phone_labels_head"] = phone_labels_head
@@ -170,9 +185,26 @@ def preprocess(example, model, phone_dict):
     return example
 
 class StressDataset(torch.utils.data.Dataset):
-    def __init__(self, hf_dataset, model):
+    def __init__(self, hf_dataset_or_path, model, processed_dir="data/processed", num_proc=1):
         self.phone_dict = build_phone2id_no_stress()
-        self.dataset = hf_dataset.map(lambda x: preprocess(x, model=model, phone_dict=self.phone_dict), num_proc=1)
+
+        # 如果有快取就直接讀
+        if os.path.exists(processed_dir):
+            self.dataset = load_from_disk(processed_dir)
+        else:
+            # 如果給的是路徑 → 先讀 raw dataset
+            if isinstance(hf_dataset_or_path, str):
+                hf_dataset = load_from_disk(hf_dataset_or_path)
+            else:
+                hf_dataset = hf_dataset_or_path
+
+            # 做 map
+            self.dataset = hf_dataset.map(
+                lambda x: preprocess(x, model=model, phone_dict=self.phone_dict),
+                num_proc=num_proc
+            )
+            # 存快取
+            self.dataset.save_to_disk(processed_dir)
 
     def __len__(self):
         return len(self.dataset)
@@ -188,6 +220,7 @@ class StressDataset(torch.utils.data.Dataset):
             "transcription": item["transcription"],
             "stress_pattern_binary": item["stress_pattern"]["binary"],
             "word_ids": item["word_ids"],
+            "token_pos": item["token_pos"],
             "phones": item["phones"],
             "phone_ids": item["phone_ids"],
             "phone_labels_head": item["phone_labels_head"],
@@ -202,6 +235,7 @@ class MyCollate:
         
         decoder_input_ids = [torch.tensor(b["decoder_input_ids"], dtype=torch.long) for b in batch]
         word_ids = [torch.tensor(b["word_ids"], dtype=torch.long) for b in batch]
+        token_pos = [torch.tensor(b["token_pos"], dtype=torch.long) for b in batch]
         labels_head = [torch.tensor(b["labels_head"], dtype=torch.long) for b in batch]
         phone_ids = [torch.tensor(b["phone_ids"], dtype=torch.long) for b in batch]
         phone_labels_head = [torch.tensor(b["phone_labels_head"], dtype=torch.long) for b in batch]
@@ -211,6 +245,7 @@ class MyCollate:
             "audio_input": [b["audio_input"] for b in batch],
             "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "word_ids": pad_sequence(word_ids, batch_first=True, padding_value=-100),
+            "token_pos": pad_sequence(token_pos, batch_first=True, padding_value=-1),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
             "phone_ids": pad_sequence(phone_ids, batch_first=True, padding_value=-1),
             "phone_labels_head": pad_sequence(phone_labels_head, batch_first=True, padding_value=-100),
@@ -222,7 +257,7 @@ class MyCollate:
 
 if __name__ == "__main__":
     phone_dict = build_phone2id_no_stress()
-    phones, phone_ids, phone_stress = add_phone_features("Nice to meet you. dictionary", phone_dict)
+    phones, phone_ids, phone_stress = add_phone_features("Nice to meet you.", phone_dict)
     print(phone_dict)
     print(phones)
     print(phone_ids)

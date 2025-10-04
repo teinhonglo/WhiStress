@@ -52,7 +52,7 @@ def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
     lines_2, labels_2 = ax2.get_legend_handles_labels()
     ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right")
 
-    plt.title(f"FNR / FPR by {feature}")
+    #plt.title(f"FNR / FPR by {feature}")
     plt.tight_layout()
     output_path = save_dir / f"fnr_fpr_by_{feature}.png"
     plt.savefig(output_path)
