@@ -148,6 +148,8 @@ class WhiStress(PreTrainedModel):
         decoder_input_ids=None,
         labels_head=None,
         whisper_labels=None,
+        phone_ids=None,
+        token_pos_ids=None,
     ):  
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.whisper_model.eval()
@@ -449,6 +451,7 @@ class WhiStressPhn(PreTrainedModel):
         whisper_labels=None,
         phone_ids=None,
         phone_labels_head=None,
+        token_pos_ids=None,
     ):  
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.whisper_model.eval()
@@ -656,9 +659,9 @@ class WhiStressPhn(PreTrainedModel):
         )
 
     def __str__(self):
-        return "WhiStress"
+        return "WhiStressPhn"
 
-class WhiStressPhn(PreTrainedModel):
+class WhiStressPos(PreTrainedModel):
     
     config_class = WhisperConfig
     model_input_names = ["input_features", "labels_head", "whisper_labels"]

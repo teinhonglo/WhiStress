@@ -4,7 +4,7 @@ import librosa
 import numpy as np
 import pathlib
 from torch.nn import functional as F
-from ..model import WhiStress
+from ..model import WhiStress, WhiStressPhn
 import os
 import json
 
@@ -24,14 +24,27 @@ def get_loaded_model(device="cuda", metadata=None):
     if metadata is None:
         whisper_model_name = f"openai/whisper-small.en"
         layer_for_head=9
+        model_type = "baseline"
     else:
         whisper_model_name = metadata["whisper_tag"]
         layer_for_head=metadata["layer_for_head"]
+        model_type=metadata["model_type"]
     
     whisper_config = WhisperConfig()
-    whistress_model = WhiStress(
-        whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
-    ).to(device)
+    
+    if model_type == "wordstress":
+        whistress_model = WhiStressPhn(
+            config=whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name, num_phones=39
+        ).to(device)
+    elif model_type == "pos_stress":
+        whistress_model = WhiStressPhn(
+            config=whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
+        ).to(device)
+    else:
+        whistress_model = WhiStress(
+            config=whisper_config, layer_for_head=layer_for_head, whisper_backbone_name=whisper_model_name
+        ).to(device)
+    
     whistress_model.processor.tokenizer.model_input_names = [
         "input_ids",
         "attention_mask",
@@ -142,7 +155,7 @@ def merge_stressed_tokens(tokens_with_stress):
 
 
 def inference_from_audio_and_transcription(
-    audio: np.ndarray, transcription, model: WhiStress, device: str
+    audio: np.ndarray, transcription, model: WhiStress, device: str, phone_ids, token_pos_ids=None,
 ):
     input_features = model.processor.feature_extractor(
         audio, sampling_rate=16000, return_tensors="pt"
@@ -157,6 +170,8 @@ def inference_from_audio_and_transcription(
     out_model = model(
                     input_features=input_features.to(device),
                     decoder_input_ids=input_ids.to(device),
+                    phone_ids=phone_ids,
+                    token_pos_ids=token_pos_ids
                 )
     emphasis_probs = F.softmax(out_model.logits, dim=-1)
     emphasis_preds = torch.argmax(emphasis_probs, dim=-1)
@@ -169,14 +184,14 @@ def inference_from_audio_and_transcription(
     )
     return word_emphasis_pairs
 
-def scored_transcription(audio, model, strip_words=True, transcription: str = None, device="cuda"):
+def scored_transcription(audio, model, strip_words=True, transcription: str = None, device="cuda", phone_ids=None, token_pos_ids=None):
     audio_arr = prepare_audio(audio)
     token_stress_pairs = None
     if transcription: # if we want to use the ground truth transcription
-        token_stress_pairs = inference_from_audio_and_transcription(audio_arr, transcription, model, device)
+        token_stress_pairs = inference_from_audio_and_transcription(audio_arr, transcription, model, device, phone_ids, token_pos_ids)
     else:
+        # TODO phone_ids & token_pos_ids
         token_stress_pairs = inference_from_audio(audio_arr, model, device)
-    # token_stress_pairs = inference_from_audio(audio_arr, model)
     word_level_stress = merge_stressed_tokens(token_stress_pairs)
     if strip_words:
         word_level_stress = [(word.strip(), stress) for word, stress in word_level_stress]
