@@ -117,7 +117,17 @@ This will launch a browser-based UI for trying out the model interactively on yo
 ## 🏋️‍♀️ Training
 
 ```bash
-./run.sh --stage 1 --gpuid 0
+# Baseline
+./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline.json
+
+# Baseline + WSL
+./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_wsl.json
+
+# SSD + WSD
+./run.sh --stage 1 --gpuid 0 --train_conf conf/wordstress.json
+
+# SSD + WSD + WSL
+./run.sh --stage 1 --gpuid 0 --train_conf conf/wordstress_wsl.json
 ```
 
 ## 📊 Results
