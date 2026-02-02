@@ -43,7 +43,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
     results_dir=$exp_dir/test
 
     mkdir -p $results_dir
-    echo "CUDA_VISIBLE_DEVICES=$gpuid python test.py --pretrained_ckpt_dir $exp_dir/best --whisper_tag $whisper_tag --init_lr ${init_lr} --batch_size $batch_size --exp_dir $exp_dir"
+    echo "CUDA_VISIBLE_DEVICES=$gpuid python test.py --pretrained_ckpt_dir $exp_dir/best --whisper_tag $whisper_tag --init_lr ${init_lr} --batch_size $batch_size --exp_dir $exp_dir --model_type $model_type"
 
     CUDA_VISIBLE_DEVICES=$gpuid \
         python test.py \
@@ -51,6 +51,7 @@ if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
             --whisper_tag $whisper_tag \
             --init_lr ${init_lr} \
             --batch_size 1 \
+            --model_type $model_type \
             --exp_dir $exp_dir > $results_dir/test.log
 fi
 

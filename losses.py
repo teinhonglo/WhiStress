@@ -9,10 +9,10 @@ from torch.nn.modules.loss import _Loss
 import os
 import ast
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 from torch.autograd import Variable
 
-def compute_adaptive_weighted_loss(logits, labels, word_ids_batch):
+def compute_adaptive_weighted_loss(logits, labels_head, word_ids):
     B, T, _ = logits.shape
     probs = F.softmax(logits, dim=-1)[..., 1]  # (B, T) — probability of class 1 (stressed) per token
 
@@ -23,8 +23,8 @@ def compute_adaptive_weighted_loss(logits, labels, word_ids_batch):
         word2token = defaultdict(list)
 
         # Step 0: Group token indices by word ID (excluding special tokens and paddings)
-        for t, wid in enumerate(word_ids_batch[b]):
-            if wid != -100 and labels[b, t] != -100 and labels[b, t] == 1:
+        for t, wid in enumerate(word_ids[b]):
+            if wid != -100 and labels_head[b, t] != -100 and labels_head[b, t] == 1:
                 word2token[wid].append(t)
 
         # Step 1–3: For each word/syllable group
@@ -57,7 +57,7 @@ def compute_adaptive_weighted_loss(logits, labels, word_ids_batch):
             count += 1
 
     # Return mean loss over valid words (or 0.0 if none)
-    return total_loss / count if count > 0 else torch.tensor(0.0, device=logits.device)
+    return -1 * total_loss / count if count > 0 else torch.tensor(0.0, device=logits.device)
 
 class ComputeLoss(nn.Module):
     def __init__(self, model_args, class_weights=None):

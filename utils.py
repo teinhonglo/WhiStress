@@ -38,6 +38,15 @@ pos_map_dict = {p: i for i, p in enumerate(POS)}
 g2p = G2p()
 nlp_model = NlpModel(tokenize_pretokenized=True)
 
+def load_from_json(data_json):
+    with open(data_json) as jsonfile:
+        x = json.load(jsonfile)
+        return x
+
+def save_to_json(data_dict, path):
+    with open(path, "w") as write_file:
+        json.dump(data_dict, write_file, indent=4)
+
 def build_phone2id_no_stress(path="data/local/phones.txt"):
     path = Path(path)
     if path.exists():
@@ -215,15 +224,15 @@ class StressDataset(torch.utils.data.Dataset):
         return {
             "audio": item["audio"],
             "audio_input": item["audio_input"],
-            "decoder_input_ids": item["decoder_input_ids"],
-            "labels_head": item["labels_head"],
+            "decoder_input_ids": torch.tensor(item["decoder_input_ids"], dtype=torch.long),
+            "labels_head": torch.tensor(item["labels_head"], dtype=torch.long),
             "transcription": item["transcription"],
             "stress_pattern_binary": item["stress_pattern"]["binary"],
-            "word_ids": item["word_ids"],
-            "token_pos": item["token_pos"],
+            "word_ids": torch.tensor(item["word_ids"], dtype=torch.long),
+            "token_pos_ids": torch.tensor(item["token_pos"], dtype=torch.long),
             "phones": item["phones"],
-            "phone_ids": item["phone_ids"],
-            "phone_labels_head": item["phone_labels_head"],
+            "phone_ids": torch.tensor(item["phone_ids"], dtype=torch.long),
+            "phone_labels_head": torch.tensor(item["phone_labels_head"], dtype=torch.long),
             "id": item["id"]
         }
 
@@ -233,19 +242,19 @@ class MyCollate:
 
     def __call__(self, batch):
         
-        decoder_input_ids = [torch.tensor(b["decoder_input_ids"], dtype=torch.long) for b in batch]
-        word_ids = [torch.tensor(b["word_ids"], dtype=torch.long) for b in batch]
-        token_pos = [torch.tensor(b["token_pos"], dtype=torch.long) for b in batch]
-        labels_head = [torch.tensor(b["labels_head"], dtype=torch.long) for b in batch]
-        phone_ids = [torch.tensor(b["phone_ids"], dtype=torch.long) for b in batch]
-        phone_labels_head = [torch.tensor(b["phone_labels_head"], dtype=torch.long) for b in batch]
+        decoder_input_ids = [b["decoder_input_ids"] for b in batch]
+        word_ids = [b["word_ids"] for b in batch]
+        token_pos_ids = [b["token_pos_ids"] for b in batch]
+        labels_head = [b["labels_head"] for b in batch]
+        phone_ids = [b["phone_ids"] for b in batch]
+        phone_labels_head = [b["phone_labels_head"] for b in batch]
             
         return {
             "audio": [b["audio"] for b in batch],
             "audio_input": [b["audio_input"] for b in batch],
             "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "word_ids": pad_sequence(word_ids, batch_first=True, padding_value=-100),
-            "token_pos": pad_sequence(token_pos, batch_first=True, padding_value=-1),
+            "token_pos_ids": pad_sequence(token_pos_ids, batch_first=True, padding_value=-1),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
             "phone_ids": pad_sequence(phone_ids, batch_first=True, padding_value=-1),
             "phone_labels_head": pad_sequence(phone_labels_head, batch_first=True, padding_value=-100),

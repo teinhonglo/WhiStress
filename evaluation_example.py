@@ -5,6 +5,8 @@ from pathlib import Path
 from whistress import WhiStressInferenceClient
 import pprint
 import pyphen
+from utils import StressDataset, MyCollate
+from torch.utils.data import DataLoader
 import argparse
 
 dic = pyphen.Pyphen(lang='en')
@@ -37,7 +39,7 @@ def compute_prf_metrics(predictions, references, average="binary"):
     return {"precision": p, "recall": r, "f1": f}
 
 
-def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=True):
+def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=True, device="cpu", skip=False):
     """
     Sample structure example for slp-rl/StressTest dataset:
     # {'id': '98dd4a46-6b59-4817-befc-e35d548465c7',
@@ -62,22 +64,29 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
     """
     predictions = []
     references = []
+    predictions_psd = []
+    references_psd = []
     error_cases = []
 
     for sample in tqdm(dataset):
-        gt_stresses = sample['stress_pattern']['binary']
+        #gt_stresses = sample['stress_pattern']['binary']
+        gt_stresses = sample['stress_pattern_binary']
         
         if with_transcription:
+            phone_ids = sample['phone_ids'].reshape(1,-1).to(device)
+            token_pos_ids = sample['token_pos_ids'].reshape(1,-1).to(device)
             # Transcription
-            scored = whistress_client.predict(
+            scored, phone_stress_preds = whistress_client.predict(
                 audio=sample['audio'],
                 # Using ground truth transcription for evaluating stress prediction ability. 
                 # set transcription to None if not available
                 transcription=sample['transcription'], 
-                return_pairs=True
+                return_pairs=True,
+                phone_ids=phone_ids,
+                token_pos_ids=token_pos_ids
             )
         else:
-            scored = whistress_client.predict(
+            scored, phone_stress_preds = whistress_client.predict(
                 audio=sample['audio'],
                 transcription=None, 
                 return_pairs=True
@@ -122,7 +131,16 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
                 "word_len": len(words[i]),
                 "syllable_count": count_syllables(words[i]),
             })
-
+        
+        
+        if phone_stress_preds is not None:
+            # shape (1, num_phones)
+            phone_stress_preds = phone_stress_preds.to("cpu").detach().numpy()[0]
+            # shape (num_phones)
+            phone_labels_head = sample['phone_labels_head'].to("cpu").detach().numpy()
+            predictions_psd.extend(list(phone_stress_preds))
+            references_psd.extend(list(phone_labels_head))
+        
         error_cases.append({
             "transcription": sample["transcription"],
             "utt_len": utt_len,
@@ -137,7 +155,8 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
         references.extend(gt_stresses)
 
     metrics = compute_prf_metrics(predictions, references, average="binary")
-    return metrics, error_cases
+    metrics_psd = compute_prf_metrics(predictions_psd, references_psd, average="binary")
+    return metrics, metrics_psd, error_cases
 
 def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
     words = transcription.strip().split()
@@ -171,15 +190,19 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     whistress_client = WhiStressInferenceClient(device=device, metadata=metadata)
-    dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
-    
-    metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
-    metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
+    model = whistress_client.whistress
+    #dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
+    #metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
+    #metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
+    dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir="data/{split_name}")
+    metrics, metrics_wsd, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, device=device)
+    metrics_wot, _, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False, device=device)
 
     results = {
         "dataset": dataset_name,
         "split": split_name,
         "metrics": metrics,
+        "metrics_wsd": metrics_wsd,
         "metrics_wot": metrics_wot
     }
 

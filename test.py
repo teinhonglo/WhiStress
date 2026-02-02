@@ -16,48 +16,24 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
-from whistress.model.model import WhiStress
+from whistress.model.model import WhiStress, WhiStressPhn, WhiStressPhnIa
 
 from utils import StressDataset, MyCollate
 from metrics import compute_prf_metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--whisper_tag", type=str, default="openai/whisper-small.en")
     parser.add_argument("--pretrained_ckpt_dir", type=str)
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--init_lr", type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=66)
-    parser.add_argument('--layer_for_head', type=int, default=9)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
     args = parser.parse_args()
 
-    init_lr = args.init_lr
     exp_dir = Path(args.exp_dir)
     pretrained_ckpt_dir = Path(args.pretrained_ckpt_dir)
-    whisper_tag = args.whisper_tag
-
-    seed = args.seed
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    os.environ['PYTHONHASHSEED'] = str(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    config = WhisperConfig.from_pretrained(whisper_tag)
-    model = WhiStress(config=config, layer_for_head=args.layer_for_head, whisper_backbone_name=whisper_tag).to(device)
-    model.processor.tokenizer.model_input_names = [
-        "input_ids",
-        "attention_mask",
-        "labels_head",
-    ]
-
-    #model.load_state_dict(torch.load(pretrained_ckpt_dir / "model.pt"))
+    
     with open(pretrained_ckpt_dir / "metadata.json", "r") as fn:
         metadata = json.load(fn)
     
@@ -84,15 +60,20 @@ if __name__ == "__main__":
             input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
             decoder_input_ids = batch["decoder_input_ids"].to(device)
             labels = batch["labels_head"].to(device)
-            output = model(input_features=input_features, decoder_input_ids=decoder_input_ids, labels_head=labels)
+            phone_ids = batch["phone_ids"].to(device)
+            phone_labels_head = batch["phone_labels_head"].to(device)
+            word_ids = batch["word_ids"].to(device)
+
+            output = model(
+                input_features=input_features, 
+                decoder_input_ids=decoder_input_ids, 
+                labels_head=labels, 
+                phone_ids=phone_ids, 
+                phone_labels_head=phone_labels_head,
+                word_ids=word_ids)
             
             preds = output.preds.view(-1).tolist()
             labels_flat = labels.view(-1).tolist()
-            
-            #print("prediction", preds)
-            #print("ground_truth", labels_flat)
-            #print("stress_pattern_binary", stress_pattern_binary[0])
-            #print("transcription", transcription[0].split())
             
             for p, l in zip(preds, labels_flat):
                 if l != -100:
