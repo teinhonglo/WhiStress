@@ -9,7 +9,7 @@ import wandb
 
 import torch
 from torch.utils.data import DataLoader
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset, load_from_disk, Dataset
 from transformers import WhisperProcessor, WhisperTokenizerFast, WhisperConfig, AdamW
 from tqdm import tqdm
 import torch.nn.functional as F
@@ -29,6 +29,7 @@ cmu = cmudict.dict()
 
 from g2p_en import G2p
 from local.e2e_stt.nlp_models import NlpModel
+import pandas as pd
 
 POS = ["ADJ", "ADP", "ADV", "AUX", "CCONJ", "DET", 
        "INTJ", "NOUN", "NUM", "PART", "PRON", "PROPN", 
@@ -37,6 +38,52 @@ pos_map_dict = {p: i for i, p in enumerate(POS)}
 
 g2p = G2p()
 nlp_model = NlpModel(tokenize_pretokenized=True)
+
+from datasets import Audio
+
+def filter_punctuation_and_labels(example):
+    original_words = example["src_sentence"]
+    original_labels = example["gold_emphasis"]
+    
+    new_words = []
+    new_labels = []
+    
+    # Track how many punctuation marks we've skipped to offset the indices
+    punct_count_before = 0
+    
+    for i, word in enumerate(original_words):
+        # Check if the word is just punctuation (e.g., ",", ".", "?")
+        if all(char in string.punctuation for char in word):
+            punct_count_before += 1
+            continue
+        
+        # If this word was in gold_emphasis, calculate its new index
+        if i in original_labels:
+            new_labels.append(i - punct_count_before)
+            
+        new_words.append(word)
+    
+    example["src_sentence"] = new_words
+    example["gold_emphasis"] = new_labels
+    return example
+
+def load_emphassess_dataset(json_path, wav_base_dir):
+    df = pd.read_json(json_path, orient='records', lines=True)
+    ds = Dataset.from_pandas(df)
+    
+    # --- NEW STEP: Filter Punctuation ---
+    ds = ds.map(filter_punctuation_and_labels)
+    # ------------------------------------
+    
+    # Pathing logic
+    ds = ds.map(lambda x: {
+        "audio": os.path.join(wav_base_dir, f"{x['id']}.wav"),
+        "transcription": " ".join(x["src_sentence"]),
+        "emphasis_indices": x["gold_emphasis"]
+    })
+    
+    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
+    return ds
 
 def load_from_json(data_json):
     with open(data_json) as jsonfile:
@@ -121,9 +168,18 @@ def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> li
     words = transcription.strip().split()
     return [1 if i in emphasis_indices else 0 for i in range(len(words))]
 
-def preprocess(example, model, phone_dict):
+def preprocess(example, model, phone_dict, eval_dataset):
     # 1. word-level binary label
-    binary = compute_stress_binary(example["transcription"], example["emphasis_indices"])
+    binary = None
+    # Tiny stress
+    if(eval_dataset == "TinyStress" or eval_dataset == "Emphassess"):
+        binary = compute_stress_binary(example["transcription"], example["emphasis_indices"])
+    # StressTest
+    elif(eval_dataset == "StressTest" or eval_dataset == "StressPresso"):
+        binary = compute_stress_binary(example["transcription"], example["stress_pattern"]["indices"])
+    else:
+        print("wrong dataset")
+
     example["stress_pattern"] = {"binary": binary}
 
     # 2. prepare audio
@@ -190,17 +246,21 @@ def preprocess(example, model, phone_dict):
     example["phones"] = phones
     example["phone_ids"] = phone_ids
     example["phone_labels_head"] = phone_labels_head
+    if(eval_dataset == "StressTest" or eval_dataset == "StressPresso"):
+        example["id"] = example["transcription_id"]
     
     return example
 
 class StressDataset(torch.utils.data.Dataset):
-    def __init__(self, hf_dataset_or_path, model, processed_dir="data/processed", num_proc=1):
+    def __init__(self, hf_dataset_or_path, model, processed_dir="data/processed", num_proc=1, eval_dataset="TinyStress"):
         self.phone_dict = build_phone2id_no_stress()
 
         # 如果有快取就直接讀
         if os.path.exists(processed_dir):
+            print("load from 'processed_dir")
             self.dataset = load_from_disk(processed_dir)
         else:
+            print("processing dataset")
             # 如果給的是路徑 → 先讀 raw dataset
             if isinstance(hf_dataset_or_path, str):
                 hf_dataset = load_from_disk(hf_dataset_or_path)
@@ -209,7 +269,7 @@ class StressDataset(torch.utils.data.Dataset):
 
             # 做 map
             self.dataset = hf_dataset.map(
-                lambda x: preprocess(x, model=model, phone_dict=self.phone_dict),
+                lambda x: preprocess(x, model=model, phone_dict=self.phone_dict, eval_dataset=eval_dataset),
                 num_proc=num_proc
             )
             # 存快取
@@ -233,7 +293,7 @@ class StressDataset(torch.utils.data.Dataset):
             "phones": item["phones"],
             "phone_ids": torch.tensor(item["phone_ids"], dtype=torch.long),
             "phone_labels_head": torch.tensor(item["phone_labels_head"], dtype=torch.long),
-            "id": item["id"]
+            "id": item["id"]#["transcription_id"]#
         }
 
 @dataclass

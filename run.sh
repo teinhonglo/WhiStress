@@ -7,6 +7,7 @@ stage=0
 stop_stage=1000
 train_conf=conf/baseline.json
 gpuid=0
+eval_dataset=Emphassess #StressTest # 
 
 . ./local/parse_options.sh
 . ./path.sh
@@ -38,13 +39,14 @@ fi
 
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     metadata_fn=$exp_dir/best/metadata.json
-    results_dir=$exp_dir/test
+    results_dir=$exp_dir/$eval_dataset
 
     echo "CUDA_VISIBLE_DEVICES=$gpuid python evaluation_example.py --metadata_fn $metadata_fn --results_dir $results_dir"
 
     CUDA_VISIBLE_DEVICES=$gpuid \
         python evaluation_example.py \
             --metadata_fn $metadata_fn \
+            --eval_dataset $eval_dataset \
             --results_dir $results_dir
     
     cat $results_dir/whistress_evaluation.json
@@ -53,7 +55,7 @@ fi
 
 if [ $stage -le 4 ] && [ $stop_stage -ge 4 ]; then
     metadata_fn=$exp_dir/best/metadata.json
-    results_dir=$exp_dir/test
+    results_dir=$exp_dir/$eval_dataset
     
     python local/plot_evaluation_results.py \
         --error_case_path $results_dir/whistress_error_analysis.json \

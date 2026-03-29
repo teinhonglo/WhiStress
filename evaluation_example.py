@@ -5,9 +5,10 @@ from pathlib import Path
 from whistress import WhiStressInferenceClient
 import pprint
 import pyphen
-from utils import StressDataset, MyCollate
+from utils import StressDataset, MyCollate, load_emphassess_dataset
 from torch.utils.data import DataLoader
 import argparse
+from jiwer import wer
 
 dic = pyphen.Pyphen(lang='en')
 
@@ -67,10 +68,13 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
     predictions_psd = []
     references_psd = []
     error_cases = []
+    wer_scores = []
+    mismatch_count = 0
 
     for sample in tqdm(dataset):
         #gt_stresses = sample['stress_pattern']['binary']
         gt_stresses = sample['stress_pattern_binary']
+        gt_text = sample['transcription']
         
         if with_transcription:
             phone_ids = sample['phone_ids'].reshape(1,-1).to(device)
@@ -91,19 +95,24 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
                 transcription=None, 
                 return_pairs=True
             )
-        _, pred_stresses = zip(*scored)
+        pred_text, pred_stresses = zip(*scored)
         # Ensure the lengths are the same 
         # When transcription is not provided, predictions should be aligned with the ground truth
         
         #assert len(pred_stresses) == len(gt_stresses), "Length mismatch"
         if len(pred_stresses) != len(gt_stresses):
-            print("Length mismatch")
+            mismatch_count += 1
+            print(f"Length mismatch No.{mismatch_count}")
             print(sample['transcription'])
             print(scored)
             print(pred_stresses, len(pred_stresses))
             print(gt_stresses, len(gt_stresses))    
             continue
-        
+        #############WER
+        pred_text = " ".join(pred_text)
+        current_wer = wer(gt_text.lower(), pred_text.lower())
+        wer_scores.append(current_wer)
+
         words = sample["transcription"].strip().split()
         duration_sec = len(sample['audio']['array']) / sample['audio']['sampling_rate']
         utt_len = len(words)
@@ -156,6 +165,11 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
 
     metrics = compute_prf_metrics(predictions, references, average="binary")
     metrics_psd = compute_prf_metrics(predictions_psd, references_psd, average="binary")
+    
+    # --- 加入平均 WER ---
+    avg_wer = sum(wer_scores) / len(wer_scores) if wer_scores else 0.0
+    metrics["wer"] = avg_wer
+
     return metrics, metrics_psd, error_cases
 
 def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
@@ -174,13 +188,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata_fn", type=str)
     parser.add_argument("--results_dir", type=str)
+    parser.add_argument("--eval_dataset", type=str)
     args = parser.parse_args()
-    # Load your dataset, replace with the actual dataset you are using
-    dataset_name = "slprl/TinyStress-15K"  # Example dataset name, change as needed
-    dataset = load_dataset(dataset_name)
-    split_name = 'test' 
-    
-    print(f"Evaluating WhiStress on {dataset_name} for split {split_name}...")
+
     if args.metadata_fn is not None:
         with open(args.metadata_fn, "r") as fn:
             metadata = json.load(fn)
@@ -191,12 +201,44 @@ if __name__ == "__main__":
     
     whistress_client = WhiStressInferenceClient(device=device, metadata=metadata)
     model = whistress_client.whistress
+    dataset_name = ""
+    split_name = ""
+    dataset_test = None
+    if(args.eval_dataset == "TinyStress"):
+        dataset_name = "slprl/TinyStress-15K"  # Example dataset name, change as needed
+        split_name = 'test'
+        dataset = load_dataset(dataset_name)
+        dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/test", eval_dataset=args.eval_dataset)
+        dataset_test = dataset[split_name]
+    elif(args.eval_dataset == "Emphassess"):
+        dataset_name = "Emphassess"  # Example dataset name, change as needed
+        split_name = 'nan'
+        emph_json_path = "/datas/store162/annhung/WhiStress_ws0202/EmphAssess_Dataset/gold_df.json"
+        emph_wav_dir = "/datas/store162/annhung/WhiStress_ws0202/EmphAssess_Dataset/audio"
+        emph_dataset = load_emphassess_dataset(emph_json_path, emph_wav_dir)
+        dataset_test = StressDataset(hf_dataset_or_path=emph_dataset, model=model, processed_dir=f"data/{args.eval_dataset}", eval_dataset=args.eval_dataset)
+    elif(args.eval_dataset == "StressTest"):
+        dataset_name = "slprl/StressTest"  # Example dataset name, change as needed
+        split_name = 'test'
+        dataset = load_dataset(dataset_name)
+        dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/{args.eval_dataset}", eval_dataset=args.eval_dataset)
+        dataset_test = dataset[split_name]
+    elif(args.eval_dataset == "StressPresso"):
+        dataset_name = "slprl/StressPresso"  # Example dataset name, change as needed
+        split_name = 'test'
+        dataset = load_dataset(dataset_name)
+        dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/{args.eval_dataset}", eval_dataset=args.eval_dataset)
+        dataset_test = dataset[split_name]
+    else:
+        print("Wrong Dataset")
+    
+    print(f"Evaluating WhiStress on {dataset_name} for split {split_name}...")
     #dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
     #metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
     #metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
-    dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/{split_name}")
-    metrics, metrics_wsd, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, device=device)
-    metrics_wot, _, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False, device=device)
+    #dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/{split_name}")
+    metrics, metrics_wsd, error_cases = calculate_metrics_on_dataset(dataset=dataset_test, whistress_client=whistress_client, device=device)
+    metrics_wot, _, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset_test, whistress_client=whistress_client, with_transcription=False, device=device)
 
     results = {
         "dataset": dataset_name,
