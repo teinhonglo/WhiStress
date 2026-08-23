@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 
 import torch
 from torch.utils.data import DataLoader
-from datasets import load_dataset
 from transformers import WhisperProcessor, WhisperTokenizerFast, WhisperConfig, AdamW
 from tqdm import tqdm
 import evaluate
@@ -20,6 +19,7 @@ from whistress.model.model import WhiStress, WhiStressPhn, WhiStressPhnIa
 
 from utils import StressDataset, MyCollate
 from metrics import compute_prf_metrics
+from corpora import SUPPORTED_CORPORA, load_corpus
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -27,6 +27,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument('--seed', type=int, default=66)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
+    parser.add_argument("--corpus", choices=SUPPORTED_CORPORA, default="tinystress")
+    parser.add_argument("--split", default="test")
+    parser.add_argument("--data_root", type=Path, default=Path("data"))
+    parser.add_argument("--results_dir", type=Path, default=None)
     args = parser.parse_args()
 
     exp_dir = Path(args.exp_dir)
@@ -39,9 +43,10 @@ if __name__ == "__main__":
     
     model = get_loaded_model(device=device, metadata=metadata)
 
-    dataset = load_dataset("slprl/TinyStress-15K")
+    dataset = load_corpus(args.corpus, args.split, args.data_root / "raw")
+    processed_dir = args.data_root / "processed" / args.corpus / args.split
     data_collate = MyCollate(processor=model.processor)
-    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["test"], model=model, processed_dir="data/test"), batch_size=args.batch_size, collate_fn=data_collate)
+    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset, model=model, processed_dir=str(processed_dir)), batch_size=args.batch_size, collate_fn=data_collate)
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     
@@ -82,3 +87,17 @@ if __name__ == "__main__":
 
     prf = compute_prf_metrics(all_preds, all_labels)
     print(f"Precision: {prf['precision']:.4f}, Recall: {prf['recall']:.4f}, F1: {prf['f1']:.4f}")
+    results_dir = args.results_dir or exp_dir / "test" / args.corpus
+    results_dir.mkdir(parents=True, exist_ok=True)
+    metrics = {
+        "dataset": args.corpus,
+        "split": args.split,
+        "evaluation_stage": 2,
+        "evaluation_mode": "teacher_forced",
+        "metric_level": "whisper_token",
+        "num_samples": len(dataset),
+        "num_labeled_tokens": len(all_labels),
+        **prf,
+    }
+    with (results_dir / "stage2_metrics.json").open("w") as file:
+        json.dump(metrics, file, indent=2)
