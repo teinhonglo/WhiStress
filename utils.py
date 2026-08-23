@@ -17,6 +17,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
 from whistress.model.model import WhiStress
+from corpora import compute_stress_binary
 
 import os
 from pathlib import Path
@@ -116,10 +117,6 @@ def add_phone_features(transcription, phone_dict):
             print(transcription)
 
     return phones, phone_ids, phone_stress
-
-def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
-    words = transcription.strip().split()
-    return [1 if i in emphasis_indices else 0 for i in range(len(words))]
 
 def preprocess(example, model, phone_dict):
     # 1. word-level binary label
@@ -233,7 +230,8 @@ class StressDataset(torch.utils.data.Dataset):
             "phones": item["phones"],
             "phone_ids": torch.tensor(item["phone_ids"], dtype=torch.long),
             "phone_labels_head": torch.tensor(item["phone_labels_head"], dtype=torch.long),
-            "id": item["id"]
+            "id": item["id"],
+            "source_dataset": item.get("source_dataset", "unknown")
         }
 
 @dataclass

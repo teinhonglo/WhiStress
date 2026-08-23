@@ -8,6 +8,9 @@ import pyphen
 from utils import StressDataset, MyCollate
 from torch.utils.data import DataLoader
 import argparse
+import json
+
+from corpora import SUPPORTED_CORPORA, compute_stress_binary, load_corpus
 
 dic = pyphen.Pyphen(lang='en')
 
@@ -67,6 +70,7 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
     predictions_psd = []
     references_psd = []
     error_cases = []
+    num_skipped = 0
 
     for sample in tqdm(dataset):
         #gt_stresses = sample['stress_pattern']['binary']
@@ -102,6 +106,7 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
             print(scored)
             print(pred_stresses, len(pred_stresses))
             print(gt_stresses, len(gt_stresses))    
+            num_skipped += 1
             continue
         
         words = sample["transcription"].strip().split()
@@ -142,6 +147,8 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
             references_psd.extend(list(phone_labels_head))
         
         error_cases.append({
+            "id": str(sample["id"]),
+            "source_dataset": sample.get("source_dataset", "unknown"),
             "transcription": sample["transcription"],
             "utt_len": utt_len,
             "utt_duration": duration_sec,
@@ -154,13 +161,17 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
         predictions.extend(pred_stresses)
         references.extend(gt_stresses)
 
-    metrics = compute_prf_metrics(predictions, references, average="binary")
-    metrics_psd = compute_prf_metrics(predictions_psd, references_psd, average="binary")
-    return metrics, metrics_psd, error_cases
-
-def compute_stress_binary(transcription: str, emphasis_indices: list[int]) -> list[int]:
-    words = transcription.strip().split()
-    return [1 if i in emphasis_indices else 0 for i in range(len(words))]
+    metrics = compute_prf_metrics(predictions, references, average="binary") if references else None
+    metrics_psd = compute_prf_metrics(predictions_psd, references_psd, average="binary") if references_psd else None
+    num_samples = len(dataset)
+    coverage = {
+        "num_samples": num_samples,
+        "num_evaluated": num_samples - num_skipped,
+        "num_skipped": num_skipped,
+        "coverage_rate": (num_samples - num_skipped) / num_samples if num_samples else 0.0,
+        "skip_reasons": {"word_length_mismatch": num_skipped},
+    }
+    return metrics, metrics_psd, error_cases, coverage
 
 def add_stress_pattern(example):
     binary = compute_stress_binary(example["transcription"], example["emphasis_indices"])
@@ -169,16 +180,17 @@ def add_stress_pattern(example):
 
 
 if __name__ == "__main__":
-    from datasets import load_dataset
-    import json
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata_fn", type=str)
     parser.add_argument("--results_dir", type=str)
+    parser.add_argument("--corpus", choices=SUPPORTED_CORPORA, default="tinystress")
+    parser.add_argument("--split", default="test")
+    parser.add_argument("--data_root", type=Path, default=Path("data"))
     args = parser.parse_args()
     # Load your dataset, replace with the actual dataset you are using
-    dataset_name = "slprl/TinyStress-15K"  # Example dataset name, change as needed
-    dataset = load_dataset(dataset_name)
-    split_name = 'test' 
+    dataset_name = args.corpus
+    split_name = args.split
+    raw_dataset = load_corpus(args.corpus, args.split, args.data_root / "raw")
     
     print(f"Evaluating WhiStress on {dataset_name} for split {split_name}...")
     if args.metadata_fn is not None:
@@ -194,16 +206,33 @@ if __name__ == "__main__":
     #dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
     #metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
     #metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
-    dataset[split_name] = StressDataset(hf_dataset_or_path=dataset[split_name], model=model, processed_dir=f"data/{split_name}")
-    metrics, metrics_wsd, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, device=device)
-    metrics_wot, _, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False, device=device)
+    processed_dir = args.data_root / "processed" / args.corpus / args.split
+    dataset = StressDataset(hf_dataset_or_path=raw_dataset, model=model, processed_dir=str(processed_dir))
+    metrics, metrics_wsd, error_cases, coverage = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, device=device)
+    metrics_wot, _, error_cases_wot, coverage_wot = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, with_transcription=False, device=device)
+
+    corpus_stats = {
+        "num_original_samples": len(raw_dataset),
+        "num_filtered_invalid_emphasis": 0,
+        "num_retained_samples": len(raw_dataset),
+    }
+    if args.corpus == "emphassess":
+        corpus_stats = json.loads(raw_dataset.info.description)
 
     results = {
         "dataset": dataset_name,
         "split": split_name,
+        "num_original_samples": corpus_stats["num_original_samples"],
+        "num_filtered_invalid_emphasis": corpus_stats["num_filtered_invalid_emphasis"],
+        "num_samples": len(raw_dataset),
         "metrics": metrics,
-        "metrics_wsd": metrics_wsd,
-        "metrics_wot": metrics_wot
+        "metrics_wsd": ({
+            **metrics_wsd,
+            "label_source": "cmudict_g2p_lexical_stress",
+        } if metrics_wsd is not None else None),
+        "metrics_wot": metrics_wot,
+        "coverage": coverage,
+        "coverage_wot": coverage_wot,
     }
 
     # Save or log the metrics as needed
