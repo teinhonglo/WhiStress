@@ -109,7 +109,7 @@ def add_phone_features(transcription, phone_dict):
             phone_ids.append(phone_dict[phn_no_stress])
             
             if phn[-1].isdigit():
-                stress_label = 1 if int(phn[-1]) > 0 else 0
+                stress_label = 1 if int(phn[-1]) == 1 else 0
                 phone_stress.append(stress_label)
             else:
                 phone_stress.append(0)
