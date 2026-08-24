@@ -67,6 +67,7 @@ if __name__ == "__main__":
             labels = batch["labels_head"].to(device)
             phone_ids = batch["phone_ids"].to(device)
             phone_labels_head = batch["phone_labels_head"].to(device)
+            token_pos_ids = batch["token_pos_ids"].to(device)
             word_ids = batch["word_ids"].to(device)
 
             output = model(
@@ -75,6 +76,7 @@ if __name__ == "__main__":
                 labels_head=labels, 
                 phone_ids=phone_ids, 
                 phone_labels_head=phone_labels_head,
+                token_pos_ids=token_pos_ids,
                 word_ids=word_ids)
             
             preds = output.preds.view(-1).tolist()
