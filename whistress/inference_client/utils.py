@@ -4,7 +4,13 @@ import librosa
 import numpy as np
 import pathlib
 from torch.nn import functional as F
-from ..model import WhiStress, WhiStressPhn, WhiStressPhnIa
+from ..model import (
+    WhiStress,
+    WhiStressPos,
+    WhiStressPhn,
+    WhiStressPhnPos,
+    WhiStressPhnIa,
+)
 import os
 import json
 
@@ -47,6 +53,23 @@ def get_loaded_model(device="cuda", metadata=None):
             whisper_backbone_name=whisper_model_name,
             num_phones=39, 
         ).to(device)
+    elif model_type == "WhiStressPos":
+        print("Inference WhiStressPos")
+        whistress_model = WhiStressPos(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            pos_bias_config=metadata["pos_bias_config"],
+        ).to(device)
+    elif model_type == "WhiStressPhnPos":
+        print("Inference WhiStressPhnPos")
+        whistress_model = WhiStressPhnPos(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            pos_bias_config=metadata["pos_bias_config"],
+        ).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Inference WhiStressPhnIa")
         whistress_model = WhiStressPhnIa(
@@ -67,7 +90,9 @@ def get_loaded_model(device="cuda", metadata=None):
     if metadata is None:
         whistress_model.load_model(PATH_TO_WEIGHTS)
     else:
-        if model_type in ["WhiStressPhn", "WhiStressPhnIa"]:
+        if model_type in [
+            "WhiStressPos", "WhiStressPhn", "WhiStressPhnPos", "WhiStressPhnIa"
+        ]:
             print("Load All Weights")
             whistress_model.load_state_dict(torch.load(os.path.join(metadata["path_to_weights"], "model.pt")))
         else:

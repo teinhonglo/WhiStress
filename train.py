@@ -17,7 +17,13 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
-from whistress.model.model import WhiStress, WhiStressPhn, WhiStressPhnIa
+from whistress.model.model import (
+    WhiStress,
+    WhiStressPos,
+    WhiStressPhn,
+    WhiStressPhnPos,
+    WhiStressPhnIa,
+)
 
 from utils import StressDataset, MyCollate, load_from_json, save_to_json
 from metrics import compute_prf_metrics
@@ -48,6 +54,7 @@ if __name__ == "__main__":
     whisper_tag = model_args["whisper_tag"]
     loss_lambdas = model_args["loss_lambdas"]
     layer_for_head = model_args["layer_for_head"]
+    pos_bias_config = model_args.get("pos_bias_config", None)
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
@@ -80,6 +87,8 @@ if __name__ == "__main__":
         "layer_for_head": layer_for_head,
         "whisper_tag": whisper_tag
     }
+    if model_type in ["WhiStressPos", "WhiStressPhnPos"]:
+        hyper_params["pos_bias_config"] = pos_bias_config
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = WhisperConfig.from_pretrained(whisper_tag)
@@ -90,6 +99,13 @@ if __name__ == "__main__":
                     layer_for_head=layer_for_head, 
                     whisper_backbone_name=whisper_tag,
                     loss_lambdas=loss_lambdas).to(device)
+    elif model_type == "WhiStressPos":
+        print("Train WhiStressPos")
+        model = WhiStressPos(config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    loss_lambdas=loss_lambdas,
+                    pos_bias_config=pos_bias_config).to(device)
     elif model_type == "WhiStressPhn":
         print("Train WhiStressPhn")
         model = WhiStressPhn(config=config, 
@@ -104,6 +120,14 @@ if __name__ == "__main__":
                     whisper_backbone_name=whisper_tag, 
                     num_phones=39,
                     loss_lambdas=loss_lambdas).to(device)
+    elif model_type == "WhiStressPhnPos":
+        print("Train WhiStressPhnPos")
+        model = WhiStressPhnPos(config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    pos_bias_config=pos_bias_config).to(device)
     else:
         raise ValueError(f"model_type {model_type} hasn't been implemented yet.")
 
@@ -142,6 +166,7 @@ if __name__ == "__main__":
             labels = batch["labels_head"].to(device)
             phone_ids = batch["phone_ids"].to(device)
             phone_labels_head = batch["phone_labels_head"].to(device)
+            token_pos_ids = batch["token_pos_ids"].to(device)
             word_ids = batch["word_ids"].to(device)
 
             output = model(
@@ -150,6 +175,7 @@ if __name__ == "__main__":
                         labels_head=labels, 
                         phone_ids=phone_ids, 
                         phone_labels_head=phone_labels_head,
+                        token_pos_ids=token_pos_ids,
                         word_ids=word_ids
                     )
             loss_main = output.loss_main
@@ -194,6 +220,7 @@ if __name__ == "__main__":
                 labels = batch["labels_head"].to(device)
                 phone_ids = batch["phone_ids"].to(device)
                 phone_labels_head = batch["phone_labels_head"].to(device)
+                token_pos_ids = batch["token_pos_ids"].to(device)
                 word_ids = batch["word_ids"].to(device)
 
                 output = model(
@@ -202,6 +229,7 @@ if __name__ == "__main__":
                         labels_head=labels, 
                         phone_ids=phone_ids, 
                         phone_labels_head=phone_labels_head,
+                        token_pos_ids=token_pos_ids,
                         word_ids=word_ids
                     )
 

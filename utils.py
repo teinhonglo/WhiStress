@@ -158,6 +158,7 @@ def preprocess(example, model, phone_dict):
     for token in decoded_tokens:
         if token in model.processor.tokenizer.all_special_tokens:
             token_labels.append(-100)
+            token_pos.append(-1)
             continue
 
         if token.startswith(" ") or first_real_token:  # new word
@@ -175,6 +176,9 @@ def preprocess(example, model, phone_dict):
 
     # 5. LEFT SHIFT → align label with logits[t] = prediction of token[t+1]
     token_labels = token_labels[1:] + [-100]
+    token_pos = token_pos[1:] + [-1]
+    assert len(input_ids) == len(token_labels)
+    assert len(input_ids) == len(token_pos)
     
     # 6. Get phone sequence from transcription
     phones, phone_ids, phone_labels_head = add_phone_features(transcription, phone_dict)

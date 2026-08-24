@@ -1,1 +1,7 @@
-from .model import WhiStress, WhiStressPhn, WhiStressPhnIa
+from .model import (
+    WhiStress,
+    WhiStressPos,
+    WhiStressPhn,
+    WhiStressPhnPos,
+    WhiStressPhnIa,
+)

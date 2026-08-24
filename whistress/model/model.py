@@ -63,6 +63,41 @@ class FCNN(nn.Module):
         return x
 
 
+class PosBias(nn.Module):
+    def __init__(self, d_model, pos_bias_config):
+        super().__init__()
+        self.mode = pos_bias_config["mode"]
+        if self.mode not in ["static", "gated"]:
+            raise ValueError(f"Unsupported POS bias mode: {self.mode}")
+        self.pos_scale = pos_bias_config["scale"]
+        self.pos_embed = nn.Embedding(
+            num_embeddings=pos_bias_config["num_pos"] + 1,
+            embedding_dim=d_model,
+            padding_idx=0,
+        )
+        self.pos_dropout = nn.Dropout(pos_bias_config["dropout"])
+        self.pos_gate = (
+            nn.Linear(2 * d_model, d_model) if self.mode == "gated" else None
+        )
+
+    def forward(self, hidden_states, token_pos_ids=None):
+        if token_pos_ids is None:
+            return hidden_states
+
+        valid_pos_mask = (token_pos_ids >= 0).unsqueeze(-1)
+        pos_input_ids = token_pos_ids + 1
+        pos_embed = self.pos_embed(pos_input_ids)
+        pos_embed = self.pos_dropout(pos_embed)
+        pos_bias = pos_embed
+        if self.mode == "gated":
+            gate = torch.sigmoid(
+                self.pos_gate(torch.cat([hidden_states, pos_embed], dim=-1))
+            )
+            pos_bias = gate * pos_embed
+        pos_bias = pos_bias * valid_pos_mask
+        return hidden_states + self.pos_scale * pos_bias
+
+
 class WhiStress(PreTrainedModel):
 
     config_class = WhisperConfig
@@ -358,6 +393,103 @@ class WhiStress(PreTrainedModel):
 
     def __str__(self):
         return "WhiStress"
+
+
+class WhiStressPos(WhiStress):
+    def __init__(self, *args, pos_bias_config=None, **kwargs):
+        if pos_bias_config is None:
+            raise ValueError("pos_bias_config is required for WhiStressPos")
+        super().__init__(*args, **kwargs)
+        self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+
+    def forward(
+        self,
+        input_features,
+        attention_mask=None,
+        decoder_input_ids=None,
+        labels_head=None,
+        whisper_labels=None,
+        phone_ids=None,
+        phone_labels_head=None,
+        token_pos_ids=None,
+        word_ids=None
+    ):
+        device = input_features.device
+        self.whisper_model.eval()
+
+        # pass the inputs through the model
+        backbone_outputs = self.whisper_model(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            output_hidden_states=True,
+            labels=whisper_labels,
+        )
+
+        # Extract the hidden states of the last layer of the decoder
+        decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+
+        # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
+        layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+        # Pass the decoder last hidden layers through the new head (decoder_block + lin cls)
+
+        additional_decoder_block_outputs = self.additional_decoder_block(
+            hidden_states=decoder_last_layer_hidden_states,
+            encoder_hidden_states=layer_for_head_hidden_states,
+        )
+        ssd_hidden_states = self.pos_bias(
+            additional_decoder_block_outputs[0].to(device), token_pos_ids
+        )
+        head_logits = self.classifier(ssd_hidden_states)
+
+        # calculate softmax
+        head_probs = F.softmax(head_logits, dim=-1)
+        preds = head_probs.argmax(dim=-1).to(device)
+        # Calculate custom loss if labels are provided
+        # sentence stress detection
+        loss = None
+        loss_main = None
+        if labels_head is not None:
+            preds = torch.where(
+                torch.isin(
+                    labels_head, torch.tensor(list([-100])).to(device)  # 50257, 50362,
+                ),
+                torch.tensor(-100),
+                preds,
+            )
+            # CrossEntropyLoss for the custom head
+            loss_main = self.loss_fct(
+                head_logits.reshape(-1, head_logits.size(-1)), labels_head.reshape(-1)
+            )
+            loss = self.lambda_ssd * loss_main
+
+        # word stress loss
+        loss_wsl = None
+        if word_ids is not None and labels_head is not None and self.lambda_wsl > 0.0:
+            loss_wsl = compute_adaptive_weighted_loss(head_logits, labels_head, word_ids)
+            loss += self.lambda_wsl * loss_wsl
+
+        return CustomPhnModelOutput(
+            logits=head_logits,
+            labels_head=labels_head,
+            whisper_logits=backbone_outputs.logits,
+            loss=loss,
+            loss_main=loss_main,
+            loss_wsl=loss_wsl,
+            preds=preds,
+        )
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+        self.pos_bias.train(mode)
+        return self
+
+    def __str__(self):
+        return "WhiStressPos"
 
 class WhiStressPhn(PreTrainedModel):
     
@@ -673,6 +805,136 @@ class WhiStressPhn(PreTrainedModel):
 
     def __str__(self):
         return "WhiStressPhn"
+
+
+class WhiStressPhnPos(WhiStressPhn):
+    def __init__(self, *args, pos_bias_config=None, **kwargs):
+        if pos_bias_config is None:
+            raise ValueError("pos_bias_config is required for WhiStressPhnPos")
+        super().__init__(*args, **kwargs)
+        self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+
+    def forward(
+        self,
+        input_features,
+        attention_mask=None,
+        decoder_input_ids=None,
+        labels_head=None,
+        whisper_labels=None,
+        phone_ids=None,
+        phone_labels_head=None,
+        token_pos_ids=None,
+        word_ids=None
+    ):
+        if phone_ids is None:
+            raise ValueError("phone_ids is required for WhiStressPhn.forward")
+
+        device = input_features.device
+        self.whisper_model.eval()
+
+        # pass the inputs through the model
+        backbone_outputs = self.whisper_model(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            output_hidden_states=True,
+            labels=whisper_labels,
+        )
+
+        # Extract the hidden states of the last layer of the decoder
+        decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+
+        # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
+        layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+        # Pass the decoder last hidden layers through the new head (decoder_block + lin cls)
+        additional_decoder_block_outputs = self.additional_decoder_block(
+            hidden_states=decoder_last_layer_hidden_states,
+            encoder_hidden_states=layer_for_head_hidden_states,
+        )[0].to(device)
+
+        # pass the phone_ids through the embed layer
+        phone_embed = self.phone_embed(phone_ids + 1)
+        phone_decoder_block_outputs = self.phone_decoder(
+                                        tgt=phone_embed,           # [B, T_phone, D]
+                                        memory=layer_for_head_hidden_states  # [B, T_src, D]
+                                        )
+
+        # Sentence stress detection
+        ssd_hidden_states = self.pos_bias(
+            additional_decoder_block_outputs, token_pos_ids
+        )
+        head_logits = self.classifier(ssd_hidden_states)
+        head_probs = F.softmax(head_logits, dim=-1)
+        preds = head_probs.argmax(dim=-1).to(device)
+
+        # Word stress detection
+        phone_stress_logits = self.phone_stress_classifier(phone_decoder_block_outputs)
+        phone_stress_probs = F.softmax(phone_stress_logits, dim=-1)
+        phone_stress_preds = phone_stress_probs.argmax(dim=-1).to(device)
+
+        # Calculate custom loss if labels are provided
+        # sentence stress detection
+        loss = None
+        loss_main = None
+        if labels_head is not None:
+            preds = torch.where(
+                torch.isin(
+                    labels_head, torch.tensor(list([-100])).to(device)  # 50257, 50362,
+                ),
+                torch.tensor(-100),
+                preds,
+            )
+            # CrossEntropyLoss for the custom head
+            loss_main = self.loss_fct(
+                head_logits.reshape(-1, head_logits.size(-1)), labels_head.reshape(-1)
+            )
+            loss = self.lambda_ssd * loss_main
+
+        # word stress detection
+        loss_wsd = None
+        if phone_ids is not None and phone_labels_head is not None and self.lambda_wsd > 0.0:
+            phone_stress_preds = torch.where(
+                torch.isin(
+                        phone_labels_head, torch.tensor(list([-100])).to(device)  # 50257, 50362,
+                ),
+                torch.tensor(-100),
+                phone_stress_preds,
+            )
+            loss_wsd = self.phone_loss_fct(
+                phone_stress_logits.reshape(-1, phone_stress_logits.size(-1)), phone_labels_head.reshape(-1)
+            )
+            loss += self.lambda_wsd * loss_wsd
+
+        # word stress loss
+        loss_wsl = None
+        if word_ids is not None and labels_head is not None and self.lambda_wsl > 0.0:
+            loss_wsl = compute_adaptive_weighted_loss(head_logits, labels_head, word_ids)
+            loss += self.lambda_wsl * loss_wsl
+
+        return CustomPhnModelOutput(
+            logits=head_logits,
+            labels_head=labels_head,
+            phone_stress_logits=phone_stress_logits,
+            whisper_logits=backbone_outputs.logits,
+            loss=loss,
+            loss_main=loss_main,
+            loss_wsd=loss_wsd,
+            loss_wsl=loss_wsl,
+            preds=preds,
+            phone_stress_preds=phone_stress_preds,
+        )
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+        self.pos_bias.train(mode)
+        return self
+
+    def __str__(self):
+        return "WhiStressPhnPos"
 
 class WhiStressPhnIa(WhiStressPhn):
     
