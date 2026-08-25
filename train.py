@@ -55,6 +55,7 @@ if __name__ == "__main__":
     loss_lambdas = model_args["loss_lambdas"]
     layer_for_head = model_args["layer_for_head"]
     pos_bias_config = model_args.get("pos_bias_config", None)
+    initialization_config = model_args.get("initialization_config", {})
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
@@ -89,6 +90,31 @@ if __name__ == "__main__":
     }
     if model_type in ["WhiStressPos", "WhiStressPhnPos"]:
         hyper_params["pos_bias_config"] = pos_bias_config
+        hyper_params["initialization_config"] = initialization_config
+
+    is_pos_model = model_type in ["WhiStressPos", "WhiStressPhnPos"]
+    train_from_scratch = initialization_config.get("train_from_scratch", True)
+    parent_checkpoint_dir = initialization_config.get("checkpoint_dir")
+    freeze_pretrained_heads = initialization_config.get(
+        "freeze_pretrained_heads", False
+    )
+    # A resume restores the complete POS experiment and intentionally ignores
+    # parent-initialization settings recorded for experiment provenance.
+    if is_pos_model and not args.resume:
+        if train_from_scratch:
+            if parent_checkpoint_dir is not None:
+                raise ValueError(
+                    "checkpoint_dir must be null when train_from_scratch=True"
+                )
+            if freeze_pretrained_heads:
+                raise ValueError(
+                    "freeze_pretrained_heads must be false when "
+                    "train_from_scratch=True"
+                )
+        elif parent_checkpoint_dir is None:
+            raise ValueError(
+                "checkpoint_dir is required when train_from_scratch=False"
+            )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = WhisperConfig.from_pretrained(whisper_tag)
@@ -105,7 +131,8 @@ if __name__ == "__main__":
                     layer_for_head=layer_for_head,
                     whisper_backbone_name=whisper_tag,
                     loss_lambdas=loss_lambdas,
-                    pos_bias_config=pos_bias_config).to(device)
+                    pos_bias_config=pos_bias_config,
+                    freeze_pretrained_heads=freeze_pretrained_heads).to(device)
     elif model_type == "WhiStressPhn":
         print("Train WhiStressPhn")
         model = WhiStressPhn(config=config, 
@@ -127,7 +154,8 @@ if __name__ == "__main__":
                     whisper_backbone_name=whisper_tag,
                     num_phones=39,
                     loss_lambdas=loss_lambdas,
-                    pos_bias_config=pos_bias_config).to(device)
+                    pos_bias_config=pos_bias_config,
+                    freeze_pretrained_heads=freeze_pretrained_heads).to(device)
     else:
         raise ValueError(f"model_type {model_type} hasn't been implemented yet.")
 
@@ -137,10 +165,51 @@ if __name__ == "__main__":
         "labels_head",
     ]
 
-    if args.resume and (pretrained_ckpt_dir / "model.pt").exists():
-        model.load_state_dict(torch.load(pretrained_ckpt_dir / "model.pt"))
+    if args.resume:
+        if not args.pretrained_ckpt_dir:
+            raise ValueError("--pretrained_ckpt_dir is required with --resume")
+        resume_model_path = pretrained_ckpt_dir / "model.pt"
+        if not resume_model_path.exists():
+            raise ValueError(f"Resume checkpoint not found: {resume_model_path}")
+        model.load_state_dict(torch.load(resume_model_path, map_location=device))
+    elif is_pos_model and not train_from_scratch:
+        parent_checkpoint_dir = Path(parent_checkpoint_dir)
+        metadata_path = parent_checkpoint_dir / "metadata.json"
+        model_path = parent_checkpoint_dir / "model.pt"
+        if not metadata_path.exists() or not model_path.exists():
+            raise ValueError(
+                f"checkpoint_dir must contain model.pt and metadata.json: "
+                f"{parent_checkpoint_dir}"
+            )
+        with open(metadata_path, "r") as fn:
+            parent_metadata = json.load(fn)
+        expected_parent_type = {
+            "WhiStressPos": "WhiStress",
+            "WhiStressPhnPos": "WhiStressPhn",
+        }[model_type]
+        if parent_metadata.get("model_type") != expected_parent_type:
+            raise ValueError(
+                f"{model_type} requires a {expected_parent_type} checkpoint, "
+                f"got {parent_metadata.get('model_type')}"
+            )
+        state_dict = torch.load(model_path, map_location=device)
+        load_result = model.load_state_dict(state_dict, strict=False)
+        invalid_missing_keys = [
+            key for key in load_result.missing_keys
+            if not key.startswith("pos_bias.")
+        ]
+        if invalid_missing_keys or load_result.unexpected_keys:
+            raise ValueError(
+                "Incompatible parent checkpoint: "
+                f"missing_keys={load_result.missing_keys}, "
+                f"unexpected_keys={load_result.unexpected_keys}"
+            )
 
-    optimizer = AdamW(model.parameters(), lr=init_lr)
+    # Enforce the configured freeze policy before selecting optimizer parameters.
+    model.train()
+    optimizer = AdamW(
+        [param for param in model.parameters() if param.requires_grad], lr=init_lr
+    )
 
     dataset = load_dataset("slprl/TinyStress-15K")
     raw_train_dataset = dataset["train"].train_test_split(test_size=0.1, seed=seed)

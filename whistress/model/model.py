@@ -69,12 +69,16 @@ class PosBias(nn.Module):
         self.mode = pos_bias_config["mode"]
         if self.mode not in ["static", "gated"]:
             raise ValueError(f"Unsupported POS bias mode: {self.mode}")
-        self.pos_scale = pos_bias_config["scale"]
+        self.pos_embed_dim = pos_bias_config["embedding_dim"]
+        self.residual_scale = nn.Parameter(
+            torch.tensor(float(pos_bias_config["residual_scale_init"]))
+        )
         self.pos_embed = nn.Embedding(
             num_embeddings=pos_bias_config["num_pos"] + 1,
-            embedding_dim=d_model,
+            embedding_dim=self.pos_embed_dim,
             padding_idx=0,
         )
+        self.pos_proj = nn.Linear(self.pos_embed_dim, d_model, bias=False)
         self.pos_dropout = nn.Dropout(pos_bias_config["dropout"])
         self.pos_gate = (
             nn.Linear(2 * d_model, d_model) if self.mode == "gated" else None
@@ -86,7 +90,8 @@ class PosBias(nn.Module):
 
         valid_pos_mask = (token_pos_ids >= 0).unsqueeze(-1)
         pos_input_ids = token_pos_ids + 1
-        pos_embed = self.pos_embed(pos_input_ids)
+        pos_embed_low = self.pos_embed(pos_input_ids)
+        pos_embed = self.pos_proj(pos_embed_low)
         pos_embed = self.pos_dropout(pos_embed)
         pos_bias = pos_embed
         if self.mode == "gated":
@@ -95,7 +100,7 @@ class PosBias(nn.Module):
             )
             pos_bias = gate * pos_embed
         pos_bias = pos_bias * valid_pos_mask
-        return hidden_states + self.pos_scale * pos_bias
+        return hidden_states + self.residual_scale * pos_bias
 
 
 class WhiStress(PreTrainedModel):
@@ -396,11 +401,19 @@ class WhiStress(PreTrainedModel):
 
 
 class WhiStressPos(WhiStress):
-    def __init__(self, *args, pos_bias_config=None, **kwargs):
+    def __init__(self, *args, pos_bias_config=None,
+                 freeze_pretrained_heads=False, **kwargs):
         if pos_bias_config is None:
             raise ValueError("pos_bias_config is required for WhiStressPos")
         super().__init__(*args, **kwargs)
         self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+        self.freeze_pretrained_heads = freeze_pretrained_heads
+
+    def _freeze_pretrained_heads(self):
+        for module in [self.additional_decoder_block, self.classifier]:
+            module.eval()
+            for param in module.parameters():
+                param.requires_grad = False
 
     def forward(
         self,
@@ -485,6 +498,10 @@ class WhiStressPos(WhiStress):
 
     def train(self, mode: Optional[bool] = True):
         super().train(mode)
+        if self.freeze_pretrained_heads:
+            self._freeze_pretrained_heads()
+        for param in self.pos_bias.parameters():
+            param.requires_grad = True
         self.pos_bias.train(mode)
         return self
 
@@ -808,11 +825,26 @@ class WhiStressPhn(PreTrainedModel):
 
 
 class WhiStressPhnPos(WhiStressPhn):
-    def __init__(self, *args, pos_bias_config=None, **kwargs):
+    def __init__(self, *args, pos_bias_config=None,
+                 freeze_pretrained_heads=False, **kwargs):
         if pos_bias_config is None:
             raise ValueError("pos_bias_config is required for WhiStressPhnPos")
         super().__init__(*args, **kwargs)
         self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+        self.freeze_pretrained_heads = freeze_pretrained_heads
+
+    def _freeze_pretrained_heads(self):
+        modules = [
+            self.additional_decoder_block,
+            self.classifier,
+            self.phone_embed,
+            self.phone_decoder,
+            self.phone_stress_classifier,
+        ]
+        for module in modules:
+            module.eval()
+            for param in module.parameters():
+                param.requires_grad = False
 
     def forward(
         self,
@@ -930,6 +962,10 @@ class WhiStressPhnPos(WhiStressPhn):
 
     def train(self, mode: Optional[bool] = True):
         super().train(mode)
+        if self.freeze_pretrained_heads:
+            self._freeze_pretrained_heads()
+        for param in self.pos_bias.parameters():
+            param.requires_grad = True
         self.pos_bias.train(mode)
         return self
 

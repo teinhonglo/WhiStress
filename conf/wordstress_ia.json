@@ -1,8 +1,8 @@
-[ 
+[
   {
     "epochs": 20,
     "batch_size": 16,
-    "init_lr": 1e-4,
+    "init_lr": 0.0001,
     "patience": -1,
     "accumulate_gradient_steps": 1
   },
@@ -10,6 +10,15 @@
     "whisper_tag": "openai/whisper-small.en",
     "layer_for_head": 9,
     "model_type": "WhiStressPhnIa",
-    "loss_lambdas": {"lambda_ssd": 1.0, "lambda_wsd": 1.0, "lambda_wsl": -1}
+    "loss_lambdas": {
+      "lambda_ssd": 1.0,
+      "lambda_wsd": 1.0,
+      "lambda_wsl": -1
+    },
+    "initialization_config": {
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
+    }
   }
 ]
