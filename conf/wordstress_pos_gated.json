@@ -18,8 +18,14 @@
     "pos_bias_config": {
       "mode": "gated",
       "num_pos": 17,
-      "scale": 1.0,
+      "embedding_dim": 64,
+      "residual_scale_init": 0.0,
       "dropout": 0.0
+    },
+    "initialization_config": {
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
     }
   }
 ]
