@@ -9,7 +9,14 @@ from array import array
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_CORPORA = ("tinystress", "stresstest", "stresspresso", "emphassess")
+SUPPORTED_CORPORA = (
+    "tinystress",
+    "stresstest",
+    "stresspresso",
+    "expresso",
+    "emphassess",
+)
+EXPRESSO_EVAL_SPEAKERS = frozenset(("ex01", "ex02"))
 
 
 class InvalidEmphasisError(ValueError):
@@ -76,6 +83,66 @@ def adapt_stress_benchmark_example(
     if list(pattern["binary"]) != expected_binary:
         raise ValueError(f"Stress-pattern binary mismatch for sample {sample['id']}")
     return sample
+
+
+def parse_expresso_emphasis(text: str) -> tuple[str, list[int]]:
+    """Remove Expresso's ``*...*`` markup and return stressed word indices."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("Expresso text must be a non-empty string")
+
+    words: list[str] = []
+    emphasis_indices: list[int] = []
+    inside_emphasis = False
+    for marked_word in text.strip().split():
+        clean_characters: list[str] = []
+        word_is_emphasized = False
+        for character in marked_word:
+            if character == "*":
+                inside_emphasis = not inside_emphasis
+                continue
+            clean_characters.append(character)
+            if inside_emphasis:
+                word_is_emphasized = True
+
+        clean_word = "".join(clean_characters)
+        # Marker-only tokens are allowed, for example ``* several words *``.
+        if not clean_word:
+            continue
+        words.append(clean_word)
+        if word_is_emphasized:
+            emphasis_indices.append(len(words) - 1)
+
+    if inside_emphasis:
+        raise ValueError(f"Unbalanced Expresso emphasis markers: {text!r}")
+    if not words:
+        raise ValueError("Expresso text contains no words after removing emphasis markers")
+    return " ".join(words), emphasis_indices
+
+
+def is_expresso_evaluation_example(text: str, speaker_id: str) -> bool:
+    """Implement the ex01/ex02, positive-stress protocol used by prior work."""
+    if speaker_id not in EXPRESSO_EVAL_SPEAKERS:
+        return False
+    _, emphasis_indices = parse_expresso_emphasis(text)
+    return bool(emphasis_indices)
+
+
+def adapt_expresso_example(example: dict[str, Any]) -> dict[str, Any]:
+    transcription, emphasis_indices = parse_expresso_emphasis(example["text"])
+    if example["speaker_id"] not in EXPRESSO_EVAL_SPEAKERS or not emphasis_indices:
+        raise ValueError(
+            "Expresso evaluation keeps only ex01/ex02 samples with at least one "
+            "asterisk-marked stressed word"
+        )
+    return validate_canonical_sample({
+        "id": str(example["id"]),
+        "transcription": transcription,
+        "audio": _canonical_audio(example["audio"]),
+        "emphasis_indices": emphasis_indices,
+        "source_dataset": "expresso",
+        "speaker_id": example["speaker_id"],
+        "style": example.get("style"),
+    })
 
 
 def _read_wav(path: Path) -> dict[str, Any]:
@@ -145,7 +212,7 @@ def _read_emphassess_rows(root: Path) -> tuple[list[dict[str, Any]], int]:
 
 
 def load_corpus(corpus: str, split: str = "test", data_root: str | Path = "data/raw"):
-    from datasets import Dataset, load_from_disk
+    from datasets import Dataset, DatasetDict, load_from_disk
 
     if corpus not in SUPPORTED_CORPORA:
         raise ValueError(f"Unsupported corpus {corpus!r}; choose from {SUPPORTED_CORPORA}")
@@ -164,9 +231,42 @@ def load_corpus(corpus: str, split: str = "test", data_root: str | Path = "data/
         return dataset
 
     stored = load_from_disk(str(root))
-    raw = stored[split] if hasattr(stored, "keys") and split in stored else stored
+    if isinstance(stored, DatasetDict):
+        if split in stored:
+            raw = stored[split]
+        elif corpus == "expresso" and list(stored.keys()) == ["train"]:
+            # The public Expresso ``read`` configuration exposes one source
+            # split. It is filtered below into the established SSD test set.
+            raw = stored["train"]
+        else:
+            raise KeyError(
+                f"Split {split!r} is unavailable for {corpus!r}; "
+                f"available splits: {list(stored.keys())}"
+            )
+    else:
+        raw = stored
     if corpus == "tinystress":
         return raw.map(adapt_tinystress_example, remove_columns=raw.column_names)
+    if corpus == "expresso":
+        num_original_samples = len(raw)
+        selected = raw.filter(
+            is_expresso_evaluation_example,
+            input_columns=["text", "speaker_id"],
+            desc="Selecting the Expresso SSD evaluation subset",
+        )
+        dataset = selected.map(
+            adapt_expresso_example,
+            remove_columns=selected.column_names,
+        )
+        dataset.info.description = json.dumps({
+            "num_original_samples": num_original_samples,
+            "num_filtered_by_protocol": num_original_samples - len(dataset),
+            "num_retained_samples": len(dataset),
+            "source_split": "train",
+            "evaluation_speakers": sorted(EXPRESSO_EVAL_SPEAKERS),
+            "requires_positive_stress": True,
+        })
+        return dataset
     return raw.map(
         lambda example: adapt_stress_benchmark_example(example, corpus),
         remove_columns=raw.column_names,

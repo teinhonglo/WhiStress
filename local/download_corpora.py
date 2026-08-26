@@ -21,7 +21,9 @@ HF_DATASETS = {
     "tinystress": "slprl/TinyStress-15K",
     "stresstest": "slprl/StressTest",
     "stresspresso": "slprl/StressPresso",
+    "expresso": "ylacombe/expresso",
 }
+HF_DATASET_CONFIGS = {"expresso": "read"}
 EMPHASSESS_URL = "https://dl.fbaipublicfiles.com/speech_expressivity_evaluation/EmphAssess/EmphAssess_Dataset.tar.gz"
 
 
@@ -46,7 +48,10 @@ def download_hf_corpus(corpus: str, data_root: Path, force: bool) -> None:
         return
     if force:
         shutil.rmtree(destination, ignore_errors=True)
-    dataset = load_dataset(HF_DATASETS[corpus])
+    load_kwargs = {}
+    if corpus in HF_DATASET_CONFIGS:
+        load_kwargs["name"] = HF_DATASET_CONFIGS[corpus]
+    dataset = load_dataset(HF_DATASETS[corpus], **load_kwargs)
     temporary = Path(tempfile.mkdtemp(prefix=f".{corpus}.", dir=data_root))
     try:
         dataset.save_to_disk(str(temporary))

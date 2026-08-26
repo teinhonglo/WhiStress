@@ -216,14 +216,15 @@ if __name__ == "__main__":
         "num_filtered_invalid_emphasis": 0,
         "num_retained_samples": len(raw_dataset),
     }
-    if args.corpus == "emphassess":
+    if args.corpus in ("expresso", "emphassess"):
         corpus_stats = json.loads(raw_dataset.info.description)
 
     results = {
         "dataset": dataset_name,
         "split": split_name,
         "num_original_samples": corpus_stats["num_original_samples"],
-        "num_filtered_invalid_emphasis": corpus_stats["num_filtered_invalid_emphasis"],
+        "num_filtered_invalid_emphasis": corpus_stats.get("num_filtered_invalid_emphasis", 0),
+        "num_filtered_by_protocol": corpus_stats.get("num_filtered_by_protocol", 0),
         "num_samples": len(raw_dataset),
         "metrics": metrics,
         "metrics_wsd": ({

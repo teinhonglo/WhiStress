@@ -163,14 +163,14 @@ If you use ***WhiStress*** in your work, please cite our paper:
 
 ## Multi-corpus evaluation
 
-The evaluation pipeline supports `tinystress`, `stresstest`, `stresspresso`, and
-`emphassess`. Stage 0 downloads and validates them without changing the Stage 1
-training data or training procedure:
+The evaluation pipeline supports `tinystress`, `stresstest`, `stresspresso`,
+`expresso`, and `emphassess`. Stage 0 downloads and validates them without
+changing the Stage 1 training data or training procedure:
 
 ```bash
 python local/download_corpora.py \
   --data_root data/raw \
-  --corpora tinystress stresstest stresspresso emphassess
+  --corpora tinystress stresstest stresspresso expresso emphassess
 
 # Download, train, test, evaluate, and plot.
 ./run.sh --stage 0 --stop_stage 4 --gpuid 0 --train_conf conf/baseline.json
@@ -185,10 +185,16 @@ python local/download_corpora.py \
 TinyStress-15K already supplies `transcription`, audio, and
 `emphasis_indices`. StressTest and StressPresso supply interpretation-specific
 IDs and nested `stress_pattern` labels; their binary labels are validated during
-adaptation. EmphAssess supplies token lists and `gold_emphasis`; its original
-16-kHz source WAV (not an output of the official speech-to-speech emphasis
-transfer pipeline) is evaluated directly. All adapters produce this canonical
-shape before the existing preprocessing runs:
+adaptation. Expresso follows the SSD protocol used by WhiStress and StressTest:
+the `read` configuration is restricted to speakers `ex01` and `ex02`, and only
+samples containing at least one asterisk-marked emphasis span are retained. The
+asterisks are removed from the transcription and every word in each marked span
+is mapped to `emphasis_indices`. Expresso exposes this material in its single
+source `train` split, but it is used only as a held-out evaluation corpus here.
+EmphAssess supplies token lists and `gold_emphasis`; its original 16-kHz source
+WAV (not an output of the official speech-to-speech emphasis transfer pipeline)
+is evaluated directly. All adapters produce this canonical shape before the
+existing preprocessing runs:
 
 ```python
 {
@@ -203,9 +209,9 @@ shape before the existing preprocessing runs:
 For EmphAssess, standalone punctuation is removed while apostrophes inside words
 are retained, and emphasis indices are remapped. The 12 rows whose emphasis
 points to standalone punctuation are rejected as invalid (3,652 original, 3,640
-retained); labels are never shifted to a neighboring word. EmphAssess is
-distributed under **CC BY-NC 4.0**; review `LICENSE.md` in the downloaded corpus
-before use.
+retained); labels are never shifted to a neighboring word. Expresso and
+EmphAssess are distributed under **CC BY-NC 4.0**. Review the respective dataset
+licenses before use.
 
 Stage 2 reports teacher-forced **Whisper token-level** metrics. Stage 3 preserves
 the inference evaluation's merged **word-level** metrics, both with and without
@@ -219,5 +225,6 @@ Corpus-specific outputs are written to:
 exp/<config>/test/tinystress/
 exp/<config>/test/stresstest/
 exp/<config>/test/stresspresso/
+exp/<config>/test/expresso/
 exp/<config>/test/emphassess/
 ```

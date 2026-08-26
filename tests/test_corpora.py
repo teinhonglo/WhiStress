@@ -6,9 +6,12 @@ import pytest
 from corpora import (
     InvalidEmphasisError,
     adapt_emphassess_row,
+    adapt_expresso_example,
     adapt_stress_benchmark_example,
     adapt_tinystress_example,
     compute_stress_binary,
+    is_expresso_evaluation_example,
+    parse_expresso_emphasis,
     validate_canonical_sample,
     validate_emphassess_directory,
 )
@@ -57,6 +60,48 @@ def test_stress_benchmark_binary_consistency():
     example["stress_pattern"]["binary"] = [1, 0, 0]
     with pytest.raises(ValueError, match="interpretation"):
         adapt_stress_benchmark_example(example, "stresstest")
+
+
+def test_expresso_adapter_removes_markers_and_maps_multiword_span():
+    sample = adapt_expresso_example({
+        "id": "ex01_default_00001",
+        "text": "Was *this element* always *there?*",
+        "speaker_id": "ex01",
+        "style": "default",
+        "audio": audio(),
+    })
+    assert sample["transcription"] == "Was this element always there?"
+    assert sample["emphasis_indices"] == [1, 2, 4]
+    assert sample["source_dataset"] == "expresso"
+
+
+def test_expresso_parser_handles_marker_only_tokens_and_external_punctuation():
+    transcription, indices = parse_expresso_emphasis("Maybe * you should * change *priorities*, okay.")
+    assert transcription == "Maybe you should change priorities, okay."
+    assert indices == [1, 2, 4]
+
+
+def test_expresso_evaluation_filter_matches_paper_protocol():
+    assert is_expresso_evaluation_example("I said *now*.", "ex01")
+    assert is_expresso_evaluation_example("I said *now*.", "ex02")
+    assert not is_expresso_evaluation_example("I said *now*.", "ex03")
+    assert not is_expresso_evaluation_example("I said it now.", "ex01")
+
+
+def test_expresso_rejects_unbalanced_markers():
+    with pytest.raises(ValueError, match="Unbalanced"):
+        parse_expresso_emphasis("I said *right now")
+
+
+def test_expresso_adapter_rejects_sample_outside_evaluation_subset():
+    with pytest.raises(ValueError, match="ex01/ex02"):
+        adapt_expresso_example({
+            "id": "ex03_default_00001",
+            "text": "I said *now*.",
+            "speaker_id": "ex03",
+            "style": "default",
+            "audio": audio(),
+        })
 
 
 def test_emphassess_punctuation_remapping(tmp_path):
