@@ -8,7 +8,7 @@ stop_stage=1000
 train_conf=conf/baseline.json
 gpuid=0
 data_root=data
-test_corpora="tinystress stresstest stresspresso emphassess"
+test_corpora="tinystress stresstest stresspresso expresso emphassess"
 force_download=false
 
 . ./local/parse_options.sh

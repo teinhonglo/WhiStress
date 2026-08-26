@@ -101,5 +101,7 @@ if __name__ == "__main__":
         "num_labeled_tokens": len(all_labels),
         **prf,
     }
+    if args.corpus in ("expresso", "emphassess"):
+        metrics.update(json.loads(dataset.info.description))
     with (results_dir / "stage2_metrics.json").open("w") as file:
         json.dump(metrics, file, indent=2)
