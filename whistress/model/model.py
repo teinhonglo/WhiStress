@@ -410,7 +410,7 @@ class WhiStressPos(WhiStress):
         self.freeze_pretrained_heads = freeze_pretrained_heads
 
     def _freeze_pretrained_heads(self):
-        for module in [self.additional_decoder_block, self.classifier]:
+        for module in [self.additional_decoder_block]:
             module.eval()
             for param in module.parameters():
                 param.requires_grad = False
@@ -836,7 +836,6 @@ class WhiStressPhnPos(WhiStressPhn):
     def _freeze_pretrained_heads(self):
         modules = [
             self.additional_decoder_block,
-            self.classifier,
             self.phone_embed,
             self.phone_decoder,
             self.phone_stress_classifier,
