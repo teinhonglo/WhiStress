@@ -130,6 +130,24 @@ This will launch a browser-based UI for trying out the model interactively on yo
 ./run.sh --stage 1 --gpuid 0 --train_conf conf/wordstress_wsl.json
 ```
 
+### POS-bias injection comparison
+
+The existing `conf/*pos*.json` configurations inject POS bias after the
+additional decoder block. The corresponding `*_pre_additional*.json`
+configurations inject the same POS bias into the selected Whisper decoder
+hidden states before the additional decoder block. For example:
+
+```bash
+# Current: POS bias after the additional decoder
+./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_pos_gated.json
+
+# Comparison: POS bias before the additional decoder
+./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_pos_gated_pre_additional.json
+```
+
+Older POS configs and checkpoints without an explicit `injection_point`
+remain compatible and default to `after_additional_decoder`.
+
 ## 📊 Results
 
 | Name                  | Precision | Recall | F1    |

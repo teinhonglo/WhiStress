@@ -11,16 +11,17 @@
     "layer_for_head": 9,
     "model_type": "WhiStressPhnPos",
     "loss_lambdas": {
-      "lambda_ssd": 1.0,
-      "lambda_wsd": 1.0,
+      "lambda_ssd": 1,
+      "lambda_wsd": 1,
       "lambda_wsl": -1
     },
     "pos_bias_config": {
       "mode": "static",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0.0,
-      "dropout": 0.0
+      "residual_scale_init": 0,
+      "dropout": 0,
+      "injection_point": "after_additional_decoder"
     },
     "initialization_config": {
       "train_from_scratch": true,

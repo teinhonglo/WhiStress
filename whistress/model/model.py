@@ -103,6 +103,23 @@ class PosBias(nn.Module):
         return hidden_states + self.residual_scale * pos_bias
 
 
+POS_BIAS_INJECTION_POINTS = (
+    "before_additional_decoder",
+    "after_additional_decoder",
+)
+
+
+def _get_pos_bias_injection_point(pos_bias_config):
+    injection_point = pos_bias_config.get(
+        "injection_point", "after_additional_decoder"
+    )
+    if injection_point not in POS_BIAS_INJECTION_POINTS:
+        raise ValueError(
+            f"Unsupported POS bias injection point: {injection_point}"
+        )
+    return injection_point
+
+
 class WhiStress(PreTrainedModel):
 
     config_class = WhisperConfig
@@ -407,6 +424,9 @@ class WhiStressPos(WhiStress):
             raise ValueError("pos_bias_config is required for WhiStressPos")
         super().__init__(*args, **kwargs)
         self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+        self.pos_bias_injection_point = _get_pos_bias_injection_point(
+            pos_bias_config
+        )
         self.freeze_pretrained_heads = freeze_pretrained_heads
 
     def _freeze_pretrained_heads(self):
@@ -443,6 +463,10 @@ class WhiStressPos(WhiStress):
         decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
             self.layer_for_head
         ].to(device)
+        if self.pos_bias_injection_point == "before_additional_decoder":
+            decoder_last_layer_hidden_states = self.pos_bias(
+                decoder_last_layer_hidden_states, token_pos_ids
+            )
 
         # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
         layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
@@ -454,9 +478,9 @@ class WhiStressPos(WhiStress):
             hidden_states=decoder_last_layer_hidden_states,
             encoder_hidden_states=layer_for_head_hidden_states,
         )
-        ssd_hidden_states = self.pos_bias(
-            additional_decoder_block_outputs[0].to(device), token_pos_ids
-        )
+        ssd_hidden_states = additional_decoder_block_outputs[0].to(device)
+        if self.pos_bias_injection_point == "after_additional_decoder":
+            ssd_hidden_states = self.pos_bias(ssd_hidden_states, token_pos_ids)
         head_logits = self.classifier(ssd_hidden_states)
 
         # calculate softmax
@@ -831,6 +855,9 @@ class WhiStressPhnPos(WhiStressPhn):
             raise ValueError("pos_bias_config is required for WhiStressPhnPos")
         super().__init__(*args, **kwargs)
         self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
+        self.pos_bias_injection_point = _get_pos_bias_injection_point(
+            pos_bias_config
+        )
         self.freeze_pretrained_heads = freeze_pretrained_heads
 
     def _freeze_pretrained_heads(self):
@@ -876,6 +903,10 @@ class WhiStressPhnPos(WhiStressPhn):
         decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
             self.layer_for_head
         ].to(device)
+        if self.pos_bias_injection_point == "before_additional_decoder":
+            decoder_last_layer_hidden_states = self.pos_bias(
+                decoder_last_layer_hidden_states, token_pos_ids
+            )
 
         # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
         layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
@@ -895,9 +926,9 @@ class WhiStressPhnPos(WhiStressPhn):
                                         )
 
         # Sentence stress detection
-        ssd_hidden_states = self.pos_bias(
-            additional_decoder_block_outputs, token_pos_ids
-        )
+        ssd_hidden_states = additional_decoder_block_outputs
+        if self.pos_bias_injection_point == "after_additional_decoder":
+            ssd_hidden_states = self.pos_bias(ssd_hidden_states, token_pos_ids)
         head_logits = self.classifier(ssd_hidden_states)
         head_probs = F.softmax(head_logits, dim=-1)
         preds = head_probs.argmax(dim=-1).to(device)
