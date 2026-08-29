@@ -12,10 +12,12 @@
     "model_type": "WhiStressPos",
     "loss_lambdas": null,
     "pos_bias_config": {
-      "mode": "static",
+      "mode": "scalar_gated",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0.01,
+      "gate_dim": 64,
+      "gate_init": 0.01,
+      "normalize_pos_value": true,
       "dropout": 0,
       "injection_point": "after_additional_decoder"
     },

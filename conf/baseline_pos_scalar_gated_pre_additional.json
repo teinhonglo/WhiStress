@@ -12,17 +12,19 @@
     "model_type": "WhiStressPos",
     "loss_lambdas": null,
     "pos_bias_config": {
-      "mode": "static",
+      "mode": "scalar_gated",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0.01,
+      "gate_dim": 64,
+      "gate_init": 0.01,
+      "normalize_pos_value": true,
       "dropout": 0,
-      "injection_point": "after_additional_decoder"
+      "injection_point": "before_additional_decoder"
     },
     "initialization_config": {
-      "train_from_scratch": false,
-      "checkpoint_dir": "exp/baseline/best/",
-      "freeze_pretrained_heads": true
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
     }
   }
 ]
