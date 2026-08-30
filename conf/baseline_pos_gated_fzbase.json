@@ -15,7 +15,7 @@
       "mode": "gated",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0,
+      "residual_scale_init": 0.01,
       "dropout": 0,
       "injection_point": "after_additional_decoder"
     },
