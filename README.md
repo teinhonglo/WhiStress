@@ -148,33 +148,6 @@ hidden states before the additional decoder block. For example:
 Older POS configs and checkpoints without an explicit `injection_point`
 remain compatible and default to `after_additional_decoder`.
 
-### Scalar POS gate
-
-The `scalar_gated` mode computes one scalar gate per token and shares that
-value across all hidden dimensions:
-
-```text
-g_t = sigmoid((W_q e_t)^T (W_k h_t) / sqrt(d_g) + b_g)
-h'_t = h_t + mask_t * g_t * LayerNorm(W_v e_t)
-```
-
-Unlike the legacy vector-valued `gated` mode, `scalar_gated` has no separate
-learnable residual scale; the gate alone controls the POS contribution.
-`gate_init: 0.01` makes the initial perturbation small but keeps the POS value
-path trainable immediately. The `*_fzbase.json` static and legacy gated
-configs similarly initialize `residual_scale` to `0.01` instead of zero.
-
-```bash
-# Scalar POS gate after the additional decoder
-./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_pos_scalar_gated.json
-
-# Scalar POS gate before the additional decoder
-./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_pos_scalar_gated_pre_additional.json
-
-# Frozen pretrained heads; scalar gate starts at 0.01
-./run.sh --stage 1 --gpuid 0 --train_conf conf/baseline_pos_scalar_gated_fzbase.json
-```
-
 ## 📊 Results
 
 | Name                  | Precision | Recall | F1    |

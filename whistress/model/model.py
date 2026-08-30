@@ -13,7 +13,6 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 import json
-import math
 from whistress.model.modules.net_utils import MeanPooling
 from losses import compute_adaptive_weighted_loss
 
@@ -65,15 +64,15 @@ class FCNN(nn.Module):
 
 
 class PosBias(nn.Module):
-    SUPPORTED_MODES = ("static", "gated", "scalar_gated")
-
     def __init__(self, d_model, pos_bias_config):
         super().__init__()
         self.mode = pos_bias_config["mode"]
-        if self.mode not in self.SUPPORTED_MODES:
+        if self.mode not in ["static", "gated"]:
             raise ValueError(f"Unsupported POS bias mode: {self.mode}")
-
         self.pos_embed_dim = pos_bias_config["embedding_dim"]
+        self.residual_scale = nn.Parameter(
+            torch.tensor(float(pos_bias_config["residual_scale_init"]))
+        )
         self.pos_embed = nn.Embedding(
             num_embeddings=pos_bias_config["num_pos"] + 1,
             embedding_dim=self.pos_embed_dim,
@@ -81,50 +80,9 @@ class PosBias(nn.Module):
         )
         self.pos_proj = nn.Linear(self.pos_embed_dim, d_model, bias=False)
         self.pos_dropout = nn.Dropout(pos_bias_config["dropout"])
-
-        # Keep the original static and vector-gated parameterization unchanged
-        # for checkpoint compatibility. scalar_gated deliberately omits this
-        # scale because its scalar sigmoid gate already controls bias magnitude.
-        self.residual_scale = None
-        if self.mode != "scalar_gated":
-            self.residual_scale = nn.Parameter(
-                torch.tensor(float(pos_bias_config["residual_scale_init"]))
-            )
-
         self.pos_gate = (
             nn.Linear(2 * d_model, d_model) if self.mode == "gated" else None
         )
-
-        self.pos_gate_query = None
-        self.pos_gate_key = None
-        self.pos_gate_bias = None
-        self.pos_value_norm = None
-        if self.mode == "scalar_gated":
-            self.gate_dim = int(
-                pos_bias_config.get("gate_dim", self.pos_embed_dim)
-            )
-            if self.gate_dim <= 0:
-                raise ValueError("gate_dim must be positive")
-
-            gate_init = float(pos_bias_config.get("gate_init", 0.01))
-            if not 0.0 < gate_init < 1.0:
-                raise ValueError("gate_init must be strictly between 0 and 1")
-
-            self.pos_gate_query = nn.Linear(
-                self.pos_embed_dim, self.gate_dim, bias=False
-            )
-            self.pos_gate_key = nn.Linear(d_model, self.gate_dim, bias=False)
-            self.pos_gate_bias = nn.Parameter(
-                torch.tensor(math.log(gate_init / (1.0 - gate_init)))
-            )
-            # Start with the same small gate at every token while keeping a
-            # non-zero gradient for the POS query projection on the first step.
-            nn.init.zeros_(self.pos_gate_query.weight)
-
-            if pos_bias_config.get("normalize_pos_value", True):
-                self.pos_value_norm = nn.LayerNorm(
-                    d_model, elementwise_affine=False
-                )
 
     def forward(self, hidden_states, token_pos_ids=None):
         if token_pos_ids is None:
@@ -135,29 +93,13 @@ class PosBias(nn.Module):
         pos_embed_low = self.pos_embed(pos_input_ids)
         pos_embed = self.pos_proj(pos_embed_low)
         pos_embed = self.pos_dropout(pos_embed)
-
         pos_bias = pos_embed
         if self.mode == "gated":
             gate = torch.sigmoid(
                 self.pos_gate(torch.cat([hidden_states, pos_embed], dim=-1))
             )
             pos_bias = gate * pos_embed
-        elif self.mode == "scalar_gated":
-            query = self.pos_gate_query(pos_embed_low)
-            key = self.pos_gate_key(hidden_states)
-            gate_logits = (
-                (query * key).sum(dim=-1, keepdim=True)
-                / math.sqrt(self.gate_dim)
-                + self.pos_gate_bias
-            )
-            gate = torch.sigmoid(gate_logits)
-            if self.pos_value_norm is not None:
-                pos_bias = self.pos_value_norm(pos_bias)
-            pos_bias = gate * pos_bias
-
         pos_bias = pos_bias * valid_pos_mask
-        if self.mode == "scalar_gated":
-            return hidden_states + pos_bias
         return hidden_states + self.residual_scale * pos_bias
 
 

@@ -15,7 +15,7 @@
       "mode": "static",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0.01,
+      "residual_scale_init": 0,
       "dropout": 0,
       "injection_point": "before_additional_decoder"
     },
