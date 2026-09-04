@@ -9,19 +9,16 @@
   {
     "whisper_tag": "openai/whisper-small.en",
     "layer_for_head": 9,
-    "model_type": "WhiStressPhnPos",
-    "loss_lambdas": {
-      "lambda_ssd": 1,
-      "lambda_wsd": 1,
-      "lambda_wsl": -1
-    },
+    "model_type": "WhiStressPos",
+    "loss_lambdas": null,
     "pos_bias_config": {
-      "mode": "static",
+      "mode": "scalar_gated",
       "num_pos": 17,
       "embedding_dim": 64,
-      "residual_scale_init": 0,
-      "dropout": 0,
-      "injection_point": "before_additional_decoder"
+      "gate_dim": 64,
+      "gate_init": 0.01,
+      "normalize_pos_value": true,
+      "dropout": 0
     },
     "initialization_config": {
       "train_from_scratch": true,

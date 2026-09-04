@@ -16,8 +16,7 @@
       "num_pos": 17,
       "embedding_dim": 64,
       "residual_scale_init": 0,
-      "dropout": 0,
-      "injection_point": "after_additional_decoder"
+      "dropout": 0
     },
     "initialization_config": {
       "train_from_scratch": true,

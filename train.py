@@ -21,7 +21,6 @@ from whistress.model.model import (
     WhiStress,
     WhiStressPos,
     WhiStressPhn,
-    WhiStressPhnPos,
     WhiStressPhnIa,
 )
 
@@ -88,11 +87,11 @@ if __name__ == "__main__":
         "layer_for_head": layer_for_head,
         "whisper_tag": whisper_tag
     }
-    if model_type in ["WhiStressPos", "WhiStressPhnPos"]:
+    if model_type == "WhiStressPos":
         hyper_params["pos_bias_config"] = pos_bias_config
         hyper_params["initialization_config"] = initialization_config
 
-    is_pos_model = model_type in ["WhiStressPos", "WhiStressPhnPos"]
+    is_pos_model = model_type == "WhiStressPos"
     train_from_scratch = initialization_config.get("train_from_scratch", True)
     parent_checkpoint_dir = initialization_config.get("checkpoint_dir")
     freeze_pretrained_heads = initialization_config.get(
@@ -147,15 +146,6 @@ if __name__ == "__main__":
                     whisper_backbone_name=whisper_tag, 
                     num_phones=39,
                     loss_lambdas=loss_lambdas).to(device)
-    elif model_type == "WhiStressPhnPos":
-        print("Train WhiStressPhnPos")
-        model = WhiStressPhnPos(config=config,
-                    layer_for_head=layer_for_head,
-                    whisper_backbone_name=whisper_tag,
-                    num_phones=39,
-                    loss_lambdas=loss_lambdas,
-                    pos_bias_config=pos_bias_config,
-                    freeze_pretrained_heads=freeze_pretrained_heads).to(device)
     else:
         raise ValueError(f"model_type {model_type} hasn't been implemented yet.")
 
@@ -183,10 +173,7 @@ if __name__ == "__main__":
             )
         with open(metadata_path, "r") as fn:
             parent_metadata = json.load(fn)
-        expected_parent_type = {
-            "WhiStressPos": "WhiStress",
-            "WhiStressPhnPos": "WhiStressPhn",
-        }[model_type]
+        expected_parent_type = "WhiStress"
         if parent_metadata.get("model_type") != expected_parent_type:
             raise ValueError(
                 f"{model_type} requires a {expected_parent_type} checkpoint, "
