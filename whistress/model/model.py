@@ -65,7 +65,7 @@ class FCNN(nn.Module):
 
 
 class PosBias(nn.Module):
-    SUPPORTED_MODES = ("static", "gated", "scalar_gated")
+    SUPPORTED_MODES = ("static", "scalar_gated")
 
     def __init__(self, d_model, pos_bias_config):
         super().__init__()
@@ -82,24 +82,17 @@ class PosBias(nn.Module):
         self.pos_proj = nn.Linear(self.pos_embed_dim, d_model, bias=False)
         self.pos_dropout = nn.Dropout(pos_bias_config["dropout"])
 
-        # Keep the original static and vector-gated parameterization unchanged
-        # for checkpoint compatibility. scalar_gated deliberately omits this
-        # scale because its scalar sigmoid gate already controls bias magnitude.
         self.residual_scale = None
-        if self.mode != "scalar_gated":
-            self.residual_scale = nn.Parameter(
-                torch.tensor(float(pos_bias_config["residual_scale_init"]))
-            )
-
-        self.pos_gate = (
-            nn.Linear(2 * d_model, d_model) if self.mode == "gated" else None
-        )
-
         self.pos_gate_query = None
         self.pos_gate_key = None
         self.pos_gate_bias = None
         self.pos_value_norm = None
-        if self.mode == "scalar_gated":
+
+        if self.mode == "static":
+            self.residual_scale = nn.Parameter(
+                torch.tensor(float(pos_bias_config["residual_scale_init"]))
+            )
+        else:
             self.gate_dim = int(
                 pos_bias_config.get("gate_dim", self.pos_embed_dim)
             )
@@ -117,8 +110,6 @@ class PosBias(nn.Module):
             self.pos_gate_bias = nn.Parameter(
                 torch.tensor(math.log(gate_init / (1.0 - gate_init)))
             )
-            # Start with the same small gate at every token while keeping a
-            # non-zero gradient for the POS query projection on the first step.
             nn.init.zeros_(self.pos_gate_query.weight)
 
             if pos_bias_config.get("normalize_pos_value", True):
@@ -133,16 +124,10 @@ class PosBias(nn.Module):
         valid_pos_mask = (token_pos_ids >= 0).unsqueeze(-1)
         pos_input_ids = token_pos_ids + 1
         pos_embed_low = self.pos_embed(pos_input_ids)
-        pos_embed = self.pos_proj(pos_embed_low)
-        pos_embed = self.pos_dropout(pos_embed)
+        pos_bias = self.pos_proj(pos_embed_low)
+        pos_bias = self.pos_dropout(pos_bias)
 
-        pos_bias = pos_embed
-        if self.mode == "gated":
-            gate = torch.sigmoid(
-                self.pos_gate(torch.cat([hidden_states, pos_embed], dim=-1))
-            )
-            pos_bias = gate * pos_embed
-        elif self.mode == "scalar_gated":
+        if self.mode == "scalar_gated":
             query = self.pos_gate_query(pos_embed_low)
             key = self.pos_gate_key(hidden_states)
             gate_logits = (
@@ -156,26 +141,9 @@ class PosBias(nn.Module):
             pos_bias = gate * pos_bias
 
         pos_bias = pos_bias * valid_pos_mask
-        if self.mode == "scalar_gated":
-            return hidden_states + pos_bias
-        return hidden_states + self.residual_scale * pos_bias
-
-
-POS_BIAS_INJECTION_POINTS = (
-    "before_additional_decoder",
-    "after_additional_decoder",
-)
-
-
-def _get_pos_bias_injection_point(pos_bias_config):
-    injection_point = pos_bias_config.get(
-        "injection_point", "after_additional_decoder"
-    )
-    if injection_point not in POS_BIAS_INJECTION_POINTS:
-        raise ValueError(
-            f"Unsupported POS bias injection point: {injection_point}"
-        )
-    return injection_point
+        if self.mode == "static":
+            pos_bias = self.residual_scale * pos_bias
+        return hidden_states + pos_bias
 
 
 class WhiStress(PreTrainedModel):
@@ -482,9 +450,6 @@ class WhiStressPos(WhiStress):
             raise ValueError("pos_bias_config is required for WhiStressPos")
         super().__init__(*args, **kwargs)
         self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
-        self.pos_bias_injection_point = _get_pos_bias_injection_point(
-            pos_bias_config
-        )
         self.freeze_pretrained_heads = freeze_pretrained_heads
 
     def _freeze_pretrained_heads(self):
@@ -521,11 +486,6 @@ class WhiStressPos(WhiStress):
         decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
             self.layer_for_head
         ].to(device)
-        if self.pos_bias_injection_point == "before_additional_decoder":
-            decoder_last_layer_hidden_states = self.pos_bias(
-                decoder_last_layer_hidden_states, token_pos_ids
-            )
-
         # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
         layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
             self.layer_for_head
@@ -537,8 +497,7 @@ class WhiStressPos(WhiStress):
             encoder_hidden_states=layer_for_head_hidden_states,
         )
         ssd_hidden_states = additional_decoder_block_outputs[0].to(device)
-        if self.pos_bias_injection_point == "after_additional_decoder":
-            ssd_hidden_states = self.pos_bias(ssd_hidden_states, token_pos_ids)
+        ssd_hidden_states = self.pos_bias(ssd_hidden_states, token_pos_ids)
         head_logits = self.classifier(ssd_hidden_states)
 
         # calculate softmax
@@ -905,160 +864,6 @@ class WhiStressPhn(PreTrainedModel):
     def __str__(self):
         return "WhiStressPhn"
 
-
-class WhiStressPhnPos(WhiStressPhn):
-    def __init__(self, *args, pos_bias_config=None,
-                 freeze_pretrained_heads=False, **kwargs):
-        if pos_bias_config is None:
-            raise ValueError("pos_bias_config is required for WhiStressPhnPos")
-        super().__init__(*args, **kwargs)
-        self.pos_bias = PosBias(self.whisper_model.config.d_model, pos_bias_config)
-        self.pos_bias_injection_point = _get_pos_bias_injection_point(
-            pos_bias_config
-        )
-        self.freeze_pretrained_heads = freeze_pretrained_heads
-
-    def _freeze_pretrained_heads(self):
-        modules = [
-            self.additional_decoder_block,
-            self.phone_embed,
-            self.phone_decoder,
-            self.phone_stress_classifier,
-        ]
-        for module in modules:
-            module.eval()
-            for param in module.parameters():
-                param.requires_grad = False
-
-    def forward(
-        self,
-        input_features,
-        attention_mask=None,
-        decoder_input_ids=None,
-        labels_head=None,
-        whisper_labels=None,
-        phone_ids=None,
-        phone_labels_head=None,
-        token_pos_ids=None,
-        word_ids=None
-    ):
-        if phone_ids is None:
-            raise ValueError("phone_ids is required for WhiStressPhn.forward")
-
-        device = input_features.device
-        self.whisper_model.eval()
-
-        # pass the inputs through the model
-        backbone_outputs = self.whisper_model(
-            input_features=input_features,
-            attention_mask=attention_mask,
-            decoder_input_ids=decoder_input_ids,
-            output_hidden_states=True,
-            labels=whisper_labels,
-        )
-
-        # Extract the hidden states of the last layer of the decoder
-        decoder_last_layer_hidden_states = backbone_outputs.decoder_hidden_states[
-            self.layer_for_head
-        ].to(device)
-        if self.pos_bias_injection_point == "before_additional_decoder":
-            decoder_last_layer_hidden_states = self.pos_bias(
-                decoder_last_layer_hidden_states, token_pos_ids
-            )
-
-        # Extract the hidden states of the layer of the encoder who encapsulates best the prosodic features
-        layer_for_head_hidden_states = backbone_outputs.encoder_hidden_states[
-            self.layer_for_head
-        ].to(device)
-        # Pass the decoder last hidden layers through the new head (decoder_block + lin cls)
-        additional_decoder_block_outputs = self.additional_decoder_block(
-            hidden_states=decoder_last_layer_hidden_states,
-            encoder_hidden_states=layer_for_head_hidden_states,
-        )[0].to(device)
-
-        # pass the phone_ids through the embed layer
-        phone_embed = self.phone_embed(phone_ids + 1)
-        phone_decoder_block_outputs = self.phone_decoder(
-                                        tgt=phone_embed,           # [B, T_phone, D]
-                                        memory=layer_for_head_hidden_states  # [B, T_src, D]
-                                        )
-
-        # Sentence stress detection
-        ssd_hidden_states = additional_decoder_block_outputs
-        if self.pos_bias_injection_point == "after_additional_decoder":
-            ssd_hidden_states = self.pos_bias(ssd_hidden_states, token_pos_ids)
-        head_logits = self.classifier(ssd_hidden_states)
-        head_probs = F.softmax(head_logits, dim=-1)
-        preds = head_probs.argmax(dim=-1).to(device)
-
-        # Word stress detection
-        phone_stress_logits = self.phone_stress_classifier(phone_decoder_block_outputs)
-        phone_stress_probs = F.softmax(phone_stress_logits, dim=-1)
-        phone_stress_preds = phone_stress_probs.argmax(dim=-1).to(device)
-
-        # Calculate custom loss if labels are provided
-        # sentence stress detection
-        loss = None
-        loss_main = None
-        if labels_head is not None:
-            preds = torch.where(
-                torch.isin(
-                    labels_head, torch.tensor(list([-100])).to(device)  # 50257, 50362,
-                ),
-                torch.tensor(-100),
-                preds,
-            )
-            # CrossEntropyLoss for the custom head
-            loss_main = self.loss_fct(
-                head_logits.reshape(-1, head_logits.size(-1)), labels_head.reshape(-1)
-            )
-            loss = self.lambda_ssd * loss_main
-
-        # word stress detection
-        loss_wsd = None
-        if phone_ids is not None and phone_labels_head is not None and self.lambda_wsd > 0.0:
-            phone_stress_preds = torch.where(
-                torch.isin(
-                        phone_labels_head, torch.tensor(list([-100])).to(device)  # 50257, 50362,
-                ),
-                torch.tensor(-100),
-                phone_stress_preds,
-            )
-            loss_wsd = self.phone_loss_fct(
-                phone_stress_logits.reshape(-1, phone_stress_logits.size(-1)), phone_labels_head.reshape(-1)
-            )
-            loss += self.lambda_wsd * loss_wsd
-
-        # word stress loss
-        loss_wsl = None
-        if word_ids is not None and labels_head is not None and self.lambda_wsl > 0.0:
-            loss_wsl = compute_adaptive_weighted_loss(head_logits, labels_head, word_ids)
-            loss += self.lambda_wsl * loss_wsl
-
-        return CustomPhnModelOutput(
-            logits=head_logits,
-            labels_head=labels_head,
-            phone_stress_logits=phone_stress_logits,
-            whisper_logits=backbone_outputs.logits,
-            loss=loss,
-            loss_main=loss_main,
-            loss_wsd=loss_wsd,
-            loss_wsl=loss_wsl,
-            preds=preds,
-            phone_stress_preds=phone_stress_preds,
-        )
-
-    def train(self, mode: Optional[bool] = True):
-        super().train(mode)
-        if self.freeze_pretrained_heads:
-            self._freeze_pretrained_heads()
-        for param in self.pos_bias.parameters():
-            param.requires_grad = True
-        self.pos_bias.train(mode)
-        return self
-
-    def __str__(self):
-        return "WhiStressPhnPos"
 
 class WhiStressPhnIa(WhiStressPhn):
     

@@ -18,8 +18,7 @@
       "gate_dim": 64,
       "gate_init": 0.01,
       "normalize_pos_value": true,
-      "dropout": 0,
-      "injection_point": "after_additional_decoder"
+      "dropout": 0
     },
     "initialization_config": {
       "train_from_scratch": true,
