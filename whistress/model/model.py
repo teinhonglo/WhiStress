@@ -15,7 +15,11 @@ from typing import Optional
 import json
 import math
 from whistress.model.modules.net_utils import MeanPooling
-from losses import compute_adaptive_weighted_loss
+from losses import (
+    compute_adaptive_weighted_loss,
+    compute_cross_granularity_conditional_ranking_loss,
+    compute_word_level_mil_loss,
+)
 
 
 @dataclass
@@ -33,6 +37,8 @@ class CustomPhnModelOutput(BaseModelOutput):
     loss_main: Optional[torch.FloatTensor] = None
     loss_wsd: Optional[torch.FloatTensor] = None
     loss_wsl: Optional[torch.FloatTensor] = None
+    loss_rank: Optional[torch.FloatTensor] = None
+    loss_mil: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
     phone_stress_logits: torch.FloatTensor = None
     head_preds: torch.FloatTensor = None
@@ -863,6 +869,347 @@ class WhiStressPhn(PreTrainedModel):
 
     def __str__(self):
         return "WhiStressPhn"
+
+
+class WhiStressPhnPairedResidual(WhiStressPhn):
+    """Word-aligned bidirectional SSD/WSD residual coupling.
+
+    The legacy WhiStressPhn path remains untouched. This class adds a
+    zero-initialized paired residual between the SSD token representation
+    and the WSD phone representation at the lexical-word level.
+    """
+
+    def __init__(
+        self,
+        config: WhisperConfig,
+        layer_for_head: Optional[int] = None,
+        whisper_backbone_name="openai/whisper-small.en",
+        class_weights=[1.0, 2.33],
+        num_phones=39,
+        loss_lambdas=None,
+        paired_residual_config=None,
+        relation_loss_config=None,
+        mil_loss_config=None,
+    ):
+        super().__init__(
+            config=config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_backbone_name,
+            class_weights=class_weights,
+            num_phones=num_phones,
+            loss_lambdas=loss_lambdas,
+        )
+
+        paired_residual_config = paired_residual_config or {}
+        relation_loss_config = relation_loss_config or {}
+        mil_loss_config = mil_loss_config or {}
+
+        d_model = self.config.d_model
+        self.enable_wsd_to_ssd = bool(
+            paired_residual_config.get("wsd_to_ssd", True)
+        )
+        self.enable_ssd_to_wsd = bool(
+            paired_residual_config.get("ssd_to_wsd", True)
+        )
+        self.paired_temperature = float(
+            paired_residual_config.get("temperature", 1.0)
+        )
+        if self.paired_temperature <= 0:
+            raise ValueError("paired_residual temperature must be positive")
+
+        residual_scale_init = float(
+            paired_residual_config.get("residual_scale_init", 0.0)
+        )
+
+        # The two projections are deterministically overwritten with identity.
+        # Restore the CPU RNG state afterwards so adding this architecture does
+        # not change the subsequent DataLoader shuffle order for the same seed.
+        cpu_rng_state = torch.get_rng_state()
+        self.wsd_to_ssd_proj = nn.Linear(d_model, d_model, bias=False)
+        self.ssd_to_wsd_proj = nn.Linear(d_model, d_model, bias=False)
+        nn.init.eye_(self.wsd_to_ssd_proj.weight)
+        nn.init.eye_(self.ssd_to_wsd_proj.weight)
+        torch.set_rng_state(cpu_rng_state)
+
+        # Zero residual scales make the initial coupled representations
+        # identical to the uncoupled STRAW representations.
+
+        self.wsd_to_ssd_scale = nn.Parameter(
+            torch.tensor(residual_scale_init)
+        )
+        self.ssd_to_wsd_scale = nn.Parameter(
+            torch.tensor(residual_scale_init)
+        )
+
+        if loss_lambdas:
+            self.lambda_rank = float(loss_lambdas.get("lambda_rank", 0.0))
+            self.lambda_mil = float(loss_lambdas.get("lambda_mil", 0.0))
+        else:
+            self.lambda_rank = 0.0
+            self.lambda_mil = 0.0
+
+        self.rank_margin = float(relation_loss_config.get("margin", 0.2))
+        self.rank_temperature = float(
+            relation_loss_config.get("temperature", 1.0)
+        )
+        if self.rank_temperature <= 0:
+            raise ValueError("ranking temperature must be positive")
+        self.mil_temperature = float(
+            mil_loss_config.get("temperature", 1.0)
+        )
+        if self.mil_temperature <= 0:
+            raise ValueError("MIL temperature must be positive")
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+
+        for module in [self.wsd_to_ssd_proj, self.ssd_to_wsd_proj]:
+            for param in module.parameters():
+                param.requires_grad = True
+            module.train(mode)
+
+        self.wsd_to_ssd_scale.requires_grad = True
+        self.ssd_to_wsd_scale.requires_grad = True
+        return self
+
+    def _build_paired_contexts(
+        self,
+        ssd_hidden_states,
+        phone_hidden_states,
+        preliminary_phone_logits,
+        word_ids,
+        phone_word_ids,
+        phone_vowel_mask,
+    ):
+        """Build word-local contexts for both residual directions."""
+        wsd_context_for_tokens = torch.zeros_like(ssd_hidden_states)
+        ssd_context_for_phones = torch.zeros_like(phone_hidden_states)
+
+        primary_scores = (
+            preliminary_phone_logits[..., 1]
+            - preliminary_phone_logits[..., 0]
+        )
+
+        for b in range(ssd_hidden_states.size(0)):
+            valid_word_ids = torch.unique(word_ids[b][word_ids[b] >= 0])
+            for wid in valid_word_ids:
+                token_mask = word_ids[b] == wid
+                phone_mask = phone_word_ids[b] == wid
+                vowel_mask = phone_mask & phone_vowel_mask[b].bool()
+
+                if not token_mask.any() or not phone_mask.any():
+                    continue
+
+                # SSD -> WSD: sentence-level word representation is injected
+                # only into vowel phones, where lexical stress is realized.
+                if self.enable_ssd_to_wsd and vowel_mask.any():
+                    ssd_word_repr = ssd_hidden_states[b][token_mask].mean(dim=0)
+                    ssd_context_for_phones[b][vowel_mask] = ssd_word_repr
+
+                # WSD -> SSD: use a differentiable primary-stress-weighted
+                # vowel anchor from the same lexical word.
+                if self.enable_wsd_to_ssd and vowel_mask.any():
+                    vowel_scores = primary_scores[b][vowel_mask]
+                    weights = F.softmax(
+                        vowel_scores / self.paired_temperature, dim=0
+                    )
+                    vowel_states = phone_hidden_states[b][vowel_mask]
+                    wsd_word_repr = torch.sum(
+                        weights.unsqueeze(-1) * vowel_states, dim=0
+                    )
+                    wsd_context_for_tokens[b][token_mask] = wsd_word_repr
+
+        return wsd_context_for_tokens, ssd_context_for_phones
+
+    def forward(
+        self,
+        input_features,
+        attention_mask=None,
+        decoder_input_ids=None,
+        labels_head=None,
+        whisper_labels=None,
+        phone_ids=None,
+        phone_labels_head=None,
+        token_pos_ids=None,
+        word_ids=None,
+        phone_word_ids=None,
+        phone_vowel_mask=None,
+    ):
+        if phone_ids is None:
+            raise ValueError(
+                "phone_ids is required for WhiStressPhnPairedResidual.forward"
+            )
+        if word_ids is None or phone_word_ids is None or phone_vowel_mask is None:
+            raise ValueError(
+                "word_ids, phone_word_ids, and phone_vowel_mask are required "
+                "for paired residual coupling"
+            )
+
+        device = input_features.device
+        self.whisper_model.eval()
+
+        backbone_outputs = self.whisper_model(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            output_hidden_states=True,
+            labels=whisper_labels,
+        )
+
+        decoder_hidden_states = backbone_outputs.decoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+        encoder_hidden_states = backbone_outputs.encoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+
+        ssd_base = self.additional_decoder_block(
+            hidden_states=decoder_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+        )[0].to(device)
+
+        phone_embed = self.phone_embed(phone_ids + 1)
+        phone_base = self.phone_decoder(
+            tgt=phone_embed,
+            memory=encoder_hidden_states,
+        )
+
+        # Preliminary WSD logits provide a differentiable estimate of the
+        # primary lexical-stress locus used by the WSD -> SSD residual.
+        preliminary_phone_logits = self.phone_stress_classifier(phone_base)
+
+        (
+            wsd_context_for_tokens,
+            ssd_context_for_phones,
+        ) = self._build_paired_contexts(
+            ssd_hidden_states=ssd_base,
+            phone_hidden_states=phone_base,
+            preliminary_phone_logits=preliminary_phone_logits,
+            word_ids=word_ids,
+            phone_word_ids=phone_word_ids,
+            phone_vowel_mask=phone_vowel_mask,
+        )
+
+        ssd_hidden_states = ssd_base
+        if self.enable_wsd_to_ssd:
+            ssd_hidden_states = (
+                ssd_hidden_states
+                + self.wsd_to_ssd_scale
+                * self.wsd_to_ssd_proj(wsd_context_for_tokens)
+            )
+
+        phone_hidden_states = phone_base
+        if self.enable_ssd_to_wsd:
+            phone_hidden_states = (
+                phone_hidden_states
+                + self.ssd_to_wsd_scale
+                * self.ssd_to_wsd_proj(ssd_context_for_phones)
+            )
+
+        head_logits = self.classifier(ssd_hidden_states)
+        head_probs = F.softmax(head_logits, dim=-1)
+        preds = head_probs.argmax(dim=-1).to(device)
+
+        phone_stress_logits = self.phone_stress_classifier(phone_hidden_states)
+        phone_stress_probs = F.softmax(phone_stress_logits, dim=-1)
+        phone_stress_preds = phone_stress_probs.argmax(dim=-1).to(device)
+
+        loss_terms = []
+        loss_main = None
+        loss_wsd = None
+        loss_wsl = None
+        loss_rank = None
+        loss_mil = None
+
+        if labels_head is not None:
+            preds = torch.where(
+                labels_head == -100,
+                torch.tensor(-100, device=device),
+                preds,
+            )
+            loss_main = self.loss_fct(
+                head_logits.reshape(-1, head_logits.size(-1)),
+                labels_head.reshape(-1),
+            )
+            if self.lambda_ssd > 0.0:
+                loss_terms.append(self.lambda_ssd * loss_main)
+
+        if (
+            phone_labels_head is not None
+            and self.lambda_wsd > 0.0
+        ):
+            phone_stress_preds = torch.where(
+                phone_labels_head == -100,
+                torch.tensor(-100, device=device),
+                phone_stress_preds,
+            )
+            loss_wsd = self.phone_loss_fct(
+                phone_stress_logits.reshape(-1, phone_stress_logits.size(-1)),
+                phone_labels_head.reshape(-1),
+            )
+            loss_terms.append(self.lambda_wsd * loss_wsd)
+
+        if (
+            labels_head is not None
+            and phone_labels_head is not None
+            and self.lambda_rank > 0.0
+        ):
+            loss_rank = compute_cross_granularity_conditional_ranking_loss(
+                ssd_hidden_states=ssd_base,
+                phone_hidden_states=phone_base,
+                phone_stress_logits=preliminary_phone_logits,
+                labels_head=labels_head,
+                word_ids=word_ids,
+                phone_labels_head=phone_labels_head,
+                phone_word_ids=phone_word_ids,
+                phone_vowel_mask=phone_vowel_mask,
+                margin=self.rank_margin,
+                temperature=self.rank_temperature,
+            )
+            loss_terms.append(self.lambda_rank * loss_rank)
+
+        if (
+            labels_head is not None
+            and self.lambda_mil > 0.0
+        ):
+            loss_mil = compute_word_level_mil_loss(
+                logits=head_logits,
+                labels_head=labels_head,
+                word_ids=word_ids,
+                temperature=self.mil_temperature,
+            )
+            loss_terms.append(self.lambda_mil * loss_mil)
+
+        # WSL remains available for controlled legacy comparisons, but this
+        # new model uses the corrected logit-aligned word_ids mapping.
+        if (
+            labels_head is not None
+            and self.lambda_wsl > 0.0
+        ):
+            loss_wsl = compute_adaptive_weighted_loss(
+                head_logits, labels_head, word_ids
+            )
+            loss_terms.append(self.lambda_wsl * loss_wsl)
+
+        loss = torch.stack(loss_terms).sum() if loss_terms else None
+
+        return CustomPhnModelOutput(
+            logits=head_logits,
+            labels_head=labels_head,
+            phone_stress_logits=phone_stress_logits,
+            whisper_logits=backbone_outputs.logits,
+            loss=loss,
+            loss_main=loss_main,
+            loss_wsd=loss_wsd,
+            loss_wsl=loss_wsl,
+            loss_rank=loss_rank,
+            loss_mil=loss_mil,
+            preds=preds,
+            phone_stress_preds=phone_stress_preds,
+        )
+
+    def __str__(self):
+        return "WhiStressPhnPairedResidual"
 
 
 class WhiStressPhnIa(WhiStressPhn):
