@@ -972,7 +972,10 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
         wsd_context_for_tokens = torch.zeros_like(ssd_hidden_states)
         ssd_context_for_phones = torch.zeros_like(phone_hidden_states)
 
-        primary_scores = preliminary_phone_logits[..., 1]
+        primary_scores = (
+            preliminary_phone_logits[..., 1]
+            - preliminary_phone_logits[..., 0]
+        )
 
         for b in range(ssd_hidden_states.size(0)):
             valid_word_ids = torch.unique(word_ids[b][word_ids[b] >= 0])
