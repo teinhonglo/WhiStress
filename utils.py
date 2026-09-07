@@ -86,6 +86,19 @@ def add_phone_features(transcription, phone_dict):
     phone_stress = []
     phone_word_ids = []
     phone_vowel_mask = []
+
+    # Preserve the original whitespace-word indices for SSD/WSD coupling.
+    # Punctuation is still removed exactly as in the original WSD pipeline,
+    # so phone_ids / phone_stress generation is unchanged.
+    raw_words = transcription.split()
+    cleaned_raw_words = [
+        word.translate(str.maketrans('', '', string.punctuation))
+        for word in raw_words
+    ]
+    lexical_word_ids = [
+        idx for idx, word in enumerate(cleaned_raw_words) if word
+    ]
+
     transcription = transcription.translate(str.maketrans('', '', string.punctuation))
 
     transcription_phones = []
@@ -101,13 +114,15 @@ def add_phone_features(transcription, phone_dict):
 
     words = transcription.lower().split()
     assert len(words) == len(transcription_phones)
+    assert len(words) == len(lexical_word_ids)
 
-    for word_idx, phone_list in enumerate(transcription_phones):
+    for cleaned_word_idx, phone_list in enumerate(transcription_phones):
+        original_word_idx = lexical_word_ids[cleaned_word_idx]
         for phn in phone_list:
             phones.append(phn)
             phn_no_stress = re.sub(r"\d", "", phn)
             phone_ids.append(phone_dict[phn_no_stress])
-            phone_word_ids.append(word_idx)
+            phone_word_ids.append(original_word_idx)
 
             is_vowel = phn[-1].isdigit()
             phone_vowel_mask.append(1 if is_vowel else 0)
