@@ -21,6 +21,7 @@ from whistress.model.model import (
     WhiStress,
     WhiStressPos,
     WhiStressPhn,
+    WhiStressPhnPairedResidual,
     WhiStressPhnIa,
 )
 
@@ -54,6 +55,9 @@ if __name__ == "__main__":
     loss_lambdas = model_args["loss_lambdas"]
     layer_for_head = model_args["layer_for_head"]
     pos_bias_config = model_args.get("pos_bias_config", None)
+    paired_residual_config = model_args.get("paired_residual_config", None)
+    relation_loss_config = model_args.get("relation_loss_config", None)
+    mil_loss_config = model_args.get("mil_loss_config", None)
     initialization_config = model_args.get("initialization_config", {})
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
@@ -90,8 +94,13 @@ if __name__ == "__main__":
     if model_type == "WhiStressPos":
         hyper_params["pos_bias_config"] = pos_bias_config
         hyper_params["initialization_config"] = initialization_config
+    if model_type == "WhiStressPhnPairedResidual":
+        hyper_params["paired_residual_config"] = paired_residual_config or {}
+        hyper_params["relation_loss_config"] = relation_loss_config or {}
+        hyper_params["mil_loss_config"] = mil_loss_config or {}
 
     is_pos_model = model_type == "WhiStressPos"
+    is_paired_model = model_type == "WhiStressPhnPairedResidual"
     train_from_scratch = initialization_config.get("train_from_scratch", True)
     parent_checkpoint_dir = initialization_config.get("checkpoint_dir")
     freeze_pretrained_heads = initialization_config.get(
@@ -139,6 +148,17 @@ if __name__ == "__main__":
                     whisper_backbone_name=whisper_tag, 
                     num_phones=39,
                     loss_lambdas=loss_lambdas).to(device)
+    elif model_type == "WhiStressPhnPairedResidual":
+        print("Train WhiStressPhnPairedResidual")
+        model = WhiStressPhnPairedResidual(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    paired_residual_config=paired_residual_config,
+                    relation_loss_config=relation_loss_config,
+                    mil_loss_config=mil_loss_config).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Train WhiStressPhnIa")
         model = WhiStressPhnIa(config=config, 
@@ -204,8 +224,34 @@ if __name__ == "__main__":
     dataset["val"] = raw_train_dataset["test"]
     
     data_collate = MyCollate(processor=model.processor)
-    train_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["train"], model=model, processed_dir="data/train"), batch_size=batch_size, shuffle=True, collate_fn=data_collate)
-    val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset["val"], model=model, processed_dir="data/valid"), batch_size=batch_size, collate_fn=data_collate)
+    # Paired-residual experiments need the corrected token-word alignment and
+    # phone-to-word fields. Use separate caches so legacy experiments keep
+    # exactly the same processed data and training behavior.
+    train_processed_dir = (
+        "data/train_paired_v2" if is_paired_model else "data/train"
+    )
+    valid_processed_dir = (
+        "data/valid_paired_v2" if is_paired_model else "data/valid"
+    )
+    train_loader = DataLoader(
+        StressDataset(
+            hf_dataset_or_path=dataset["train"],
+            model=model,
+            processed_dir=train_processed_dir,
+        ),
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=data_collate,
+    )
+    val_loader = DataLoader(
+        StressDataset(
+            hf_dataset_or_path=dataset["val"],
+            model=model,
+            processed_dir=valid_processed_dir,
+        ),
+        batch_size=batch_size,
+        collate_fn=data_collate,
+    )
 
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     patience_counter = 0
@@ -213,6 +259,7 @@ if __name__ == "__main__":
     for epoch in range(epochs):
         model.train()
         total_loss, total_loss_main, total_loss_wsd, total_loss_wsl = 0.0, 0.0, 0.0, 0.0
+        total_loss_rank, total_loss_mil = 0.0, 0.0
         train_all_preds, train_all_labels = [], []
         for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
             audio_array = [x["array"] for x in batch["audio_input"]]
@@ -223,20 +270,36 @@ if __name__ == "__main__":
             phone_ids = batch["phone_ids"].to(device)
             phone_labels_head = batch["phone_labels_head"].to(device)
             token_pos_ids = batch["token_pos_ids"].to(device)
-            word_ids = batch["word_ids"].to(device)
+            aligned_word_ids = batch["word_ids"].to(device)
+            legacy_word_ids = batch["legacy_word_ids"].to(device)
+            phone_word_ids = batch["phone_word_ids"].to(device)
+            phone_vowel_mask = batch["phone_vowel_mask"].to(device)
 
-            output = model(
-                        input_features=input_features, 
-                        decoder_input_ids=decoder_input_ids, 
-                        labels_head=labels, 
-                        phone_ids=phone_ids, 
-                        phone_labels_head=phone_labels_head,
-                        token_pos_ids=token_pos_ids,
-                        word_ids=word_ids
-                    )
+            model_inputs = {
+                "input_features": input_features,
+                "decoder_input_ids": decoder_input_ids,
+                "labels_head": labels,
+                "phone_ids": phone_ids,
+                "phone_labels_head": phone_labels_head,
+                "token_pos_ids": token_pos_ids,
+                # Preserve the exact historical WSL mapping for all legacy
+                # model types. New paired experiments use the corrected map.
+                "word_ids": (
+                    aligned_word_ids if is_paired_model else legacy_word_ids
+                ),
+            }
+            if is_paired_model:
+                model_inputs.update({
+                    "phone_word_ids": phone_word_ids,
+                    "phone_vowel_mask": phone_vowel_mask,
+                })
+
+            output = model(**model_inputs)
             loss_main = output.loss_main
             loss_wsd = output.loss_wsd
             loss_wsl = output.loss_wsl
+            loss_rank = output.loss_rank
+            loss_mil = output.loss_mil
             loss = output.loss
             
             loss = loss / accumulate_gradient_steps
@@ -260,9 +323,22 @@ if __name__ == "__main__":
                 total_loss_wsd += loss_wsd.item()
             if loss_wsl is not None:
                 total_loss_wsl += loss_wsl.item()
+            if loss_rank is not None:
+                total_loss_rank += loss_rank.item()
+            if loss_mil is not None:
+                total_loss_mil += loss_mil.item()
 
         train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
-        print(f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, Main Loss: {total_loss_main / len(train_loader):.4f}, Phn Loss: {total_loss_wsd / len(train_loader):.4f}, WSL: {total_loss_wsl / len(train_loader):.4f}, Precision: {train_prf['precision']:.4f}, Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}")
+        print(
+            f"[Epoch {epoch+1}] - Train Loss: {total_loss / len(train_loader):.4f}, "
+            f"Main Loss: {total_loss_main / len(train_loader):.4f}, "
+            f"Phn Loss: {total_loss_wsd / len(train_loader):.4f}, "
+            f"WSL: {total_loss_wsl / len(train_loader):.4f}, "
+            f"Rank: {total_loss_rank / len(train_loader):.4f}, "
+            f"MIL: {total_loss_mil / len(train_loader):.4f}, "
+            f"Precision: {train_prf['precision']:.4f}, "
+            f"Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}"
+        )
 
         # === Validation ===
         model.eval()
@@ -277,17 +353,29 @@ if __name__ == "__main__":
                 phone_ids = batch["phone_ids"].to(device)
                 phone_labels_head = batch["phone_labels_head"].to(device)
                 token_pos_ids = batch["token_pos_ids"].to(device)
-                word_ids = batch["word_ids"].to(device)
+                aligned_word_ids = batch["word_ids"].to(device)
+                legacy_word_ids = batch["legacy_word_ids"].to(device)
+                phone_word_ids = batch["phone_word_ids"].to(device)
+                phone_vowel_mask = batch["phone_vowel_mask"].to(device)
 
-                output = model(
-                        input_features=input_features, 
-                        decoder_input_ids=decoder_input_ids, 
-                        labels_head=labels, 
-                        phone_ids=phone_ids, 
-                        phone_labels_head=phone_labels_head,
-                        token_pos_ids=token_pos_ids,
-                        word_ids=word_ids
-                    )
+                model_inputs = {
+                    "input_features": input_features,
+                    "decoder_input_ids": decoder_input_ids,
+                    "labels_head": labels,
+                    "phone_ids": phone_ids,
+                    "phone_labels_head": phone_labels_head,
+                    "token_pos_ids": token_pos_ids,
+                    "word_ids": (
+                        aligned_word_ids if is_paired_model else legacy_word_ids
+                    ),
+                }
+                if is_paired_model:
+                    model_inputs.update({
+                        "phone_word_ids": phone_word_ids,
+                        "phone_vowel_mask": phone_vowel_mask,
+                    })
+
+                output = model(**model_inputs)
 
                 preds = output.preds.view(-1).tolist()
                 labels_flat = labels.view(-1).tolist()
