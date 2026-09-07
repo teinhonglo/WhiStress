@@ -45,9 +45,7 @@ if __name__ == "__main__":
 
     dataset = load_corpus(args.corpus, args.split, args.data_root / "raw")
     is_paired_model = model.__class__.__name__ == "WhiStressPhnPairedResidual"
-    processed_split = (
-        f"{args.split}_paired_v2" if is_paired_model else args.split
-    )
+    processed_split = f"{args.split}_aligned_v2"
     processed_dir = args.data_root / "processed" / args.corpus / processed_split
     data_collate = MyCollate(processor=model.processor)
     val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset, model=model, processed_dir=str(processed_dir)), batch_size=args.batch_size, collate_fn=data_collate)
@@ -73,7 +71,6 @@ if __name__ == "__main__":
             phone_labels_head = batch["phone_labels_head"].to(device)
             token_pos_ids = batch["token_pos_ids"].to(device)
             aligned_word_ids = batch["word_ids"].to(device)
-            legacy_word_ids = batch["legacy_word_ids"].to(device)
             phone_word_ids = batch["phone_word_ids"].to(device)
             phone_vowel_mask = batch["phone_vowel_mask"].to(device)
 
@@ -84,9 +81,7 @@ if __name__ == "__main__":
                 "phone_ids": phone_ids,
                 "phone_labels_head": phone_labels_head,
                 "token_pos_ids": token_pos_ids,
-                "word_ids": (
-                    aligned_word_ids if is_paired_model else legacy_word_ids
-                ),
+                "word_ids": aligned_word_ids,
             }
             if is_paired_model:
                 model_inputs.update({
