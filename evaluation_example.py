@@ -79,15 +79,21 @@ def calculate_metrics_on_dataset(dataset, whistress_client, with_transcription=T
         if with_transcription:
             phone_ids = sample['phone_ids'].reshape(1,-1).to(device)
             token_pos_ids = sample['token_pos_ids'].reshape(1,-1).to(device)
+            word_ids = sample['word_ids'].reshape(1,-1).to(device)
+            phone_word_ids = sample['phone_word_ids'].reshape(1,-1).to(device)
+            phone_vowel_mask = sample['phone_vowel_mask'].reshape(1,-1).to(device)
             # Transcription
             scored, phone_stress_preds = whistress_client.predict(
                 audio=sample['audio'],
-                # Using ground truth transcription for evaluating stress prediction ability. 
+                # Using ground truth transcription for evaluating stress prediction ability.
                 # set transcription to None if not available
-                transcription=sample['transcription'], 
+                transcription=sample['transcription'],
                 return_pairs=True,
                 phone_ids=phone_ids,
-                token_pos_ids=token_pos_ids
+                token_pos_ids=token_pos_ids,
+                word_ids=word_ids,
+                phone_word_ids=phone_word_ids,
+                phone_vowel_mask=phone_vowel_mask,
             )
         else:
             scored, phone_stress_preds = whistress_client.predict(
@@ -206,8 +212,16 @@ if __name__ == "__main__":
     #dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
     #metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
     #metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
-    processed_dir = args.data_root / "processed" / args.corpus / args.split
-    dataset = StressDataset(hf_dataset_or_path=raw_dataset, model=model, processed_dir=str(processed_dir))
+    is_paired_model = model.__class__.__name__ == "WhiStressPhnPairedResidual"
+    processed_split = (
+        f"{args.split}_paired_v2" if is_paired_model else args.split
+    )
+    processed_dir = args.data_root / "processed" / args.corpus / processed_split
+    dataset = StressDataset(
+        hf_dataset_or_path=raw_dataset,
+        model=model,
+        processed_dir=str(processed_dir),
+    )
     metrics, metrics_wsd, error_cases, coverage = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, device=device)
     metrics_wot, _, error_cases_wot, coverage_wot = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, with_transcription=False, device=device)
 
