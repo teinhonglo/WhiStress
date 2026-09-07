@@ -212,8 +212,7 @@ if __name__ == "__main__":
     #dataset[split_name] = dataset[split_name].map(add_stress_pattern, num_proc=4)
     #metrics, error_cases = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client)
     #metrics_wot, error_cases_wot = calculate_metrics_on_dataset(dataset=dataset[split_name], whistress_client=whistress_client, with_transcription=False)
-    processed_split = f"{args.split}_aligned_v2"
-    processed_dir = args.data_root / "processed" / args.corpus / processed_split
+    processed_dir = args.data_root / "processed" / args.corpus / args.split
     dataset = StressDataset(
         hf_dataset_or_path=raw_dataset,
         model=model,
