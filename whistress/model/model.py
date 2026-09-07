@@ -920,12 +920,20 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
         residual_scale_init = float(
             paired_residual_config.get("residual_scale_init", 0.0)
         )
+
+        # The two projections are deterministically overwritten with identity.
+        # Restore the CPU RNG state afterwards so adding this architecture does
+        # not change the subsequent DataLoader shuffle order for the same seed.
+        cpu_rng_state = torch.get_rng_state()
         self.wsd_to_ssd_proj = nn.Linear(d_model, d_model, bias=False)
         self.ssd_to_wsd_proj = nn.Linear(d_model, d_model, bias=False)
-        # Identity projections + zero residual scales make the initial
-        # forward pass exactly equivalent to the uncoupled STRAW heads.
         nn.init.eye_(self.wsd_to_ssd_proj.weight)
         nn.init.eye_(self.ssd_to_wsd_proj.weight)
+        torch.set_rng_state(cpu_rng_state)
+
+        # Zero residual scales make the initial coupled representations
+        # identical to the uncoupled STRAW representations.
+
         self.wsd_to_ssd_scale = nn.Parameter(
             torch.tensor(residual_scale_init)
         )
