@@ -114,24 +114,32 @@ def compute_word_level_mil_loss(
 def compute_cross_granularity_conditional_ranking_loss(
     ssd_hidden_states,
     phone_hidden_states,
+    phone_stress_logits,
     labels_head,
     word_ids,
     phone_labels_head,
     phone_word_ids,
     phone_vowel_mask,
     margin=0.2,
+    temperature=1.0,
 ):
-    """Relate sentence prominence to the lexical primary-stress locus.
+    """Relate sentence prominence to the predicted lexical-stress locus.
 
-    For a sentence-stressed word, its pooled SSD representation should be
-    more similar to the representation of the primary-stressed vowel than
-    to the non-primary vowel representation from the same word.
+    For a sentence-stressed word, the pooled SSD representation should be
+    more similar to the WSD-predicted primary-vowel representation than to
+    the complementary non-primary-vowel representation from the same word.
+
+    WSD supervision still anchors which vowel is canonically primary. The
+    soft predicted weighting keeps this relation differentiable through the
+    WSD classifier, so the cross-granularity loss can affect both branches.
 
     The constraint is intentionally one-sided: an unstressed sentence word
     still retains lexical stress, so SSD=0 does not imply the opposite
     ranking. Words without both primary and non-primary vowel candidates are
     skipped (e.g. most monosyllabic words).
     """
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
     if ssd_hidden_states.shape[:2] != labels_head.shape:
         raise ValueError("ssd_hidden_states and labels_head must align on [B, T]")
     if labels_head.shape != word_ids.shape:
@@ -139,6 +147,10 @@ def compute_cross_granularity_conditional_ranking_loss(
     if phone_hidden_states.shape[:2] != phone_labels_head.shape:
         raise ValueError(
             "phone_hidden_states and phone_labels_head must align on [B, T_phone]"
+        )
+    if phone_stress_logits.shape[:2] != phone_labels_head.shape:
+        raise ValueError(
+            "phone_stress_logits and phone_labels_head must align on [B, T_phone]"
         )
     if phone_labels_head.shape != phone_word_ids.shape:
         raise ValueError(
@@ -150,6 +162,7 @@ def compute_cross_granularity_conditional_ranking_loss(
         )
 
     losses = []
+    primary_scores = phone_stress_logits[..., 1] - phone_stress_logits[..., 0]
 
     for b in range(ssd_hidden_states.size(0)):
         valid_word_ids = torch.unique(word_ids[b][word_ids[b] >= 0])
@@ -158,26 +171,44 @@ def compute_cross_granularity_conditional_ranking_loss(
             if not token_mask.any():
                 continue
 
-            # Apply the cross-granularity relation only when the word is
-            # sentence-stressed. Lexical stress remains present when SSD=0.
+            # Only sentence-stressed words receive the cross-granularity
+            # relation. SSD=0 does not negate lexical stress.
             word_label = labels_head[b][token_mask].max()
             if word_label.item() != 1:
                 continue
 
-            phone_mask = (
+            vowel_mask = (
                 (phone_word_ids[b] == wid)
                 & (phone_labels_head[b] != -100)
                 & phone_vowel_mask[b].bool()
             )
-            primary_mask = phone_mask & (phone_labels_head[b] == 1)
-            nonprimary_mask = phone_mask & (phone_labels_head[b] == 0)
+            vowel_labels = phone_labels_head[b][vowel_mask]
 
-            if not primary_mask.any() or not nonprimary_mask.any():
+            # The relation needs a meaningful primary-vs-non-primary
+            # contrast. This also removes monosyllabic words.
+            if (
+                vowel_labels.numel() < 2
+                or not (vowel_labels == 1).any()
+                or not (vowel_labels == 0).any()
+            ):
                 continue
 
+            vowel_states = phone_hidden_states[b][vowel_mask]
+            vowel_scores = primary_scores[b][vowel_mask]
+            primary_weights = F.softmax(vowel_scores / temperature, dim=0)
+
+            nonprimary_weights = 1.0 - primary_weights
+            nonprimary_weights = nonprimary_weights / (
+                nonprimary_weights.sum() + 1e-8
+            )
+
             ssd_word = ssd_hidden_states[b][token_mask].mean(dim=0)
-            primary_repr = phone_hidden_states[b][primary_mask].mean(dim=0)
-            nonprimary_repr = phone_hidden_states[b][nonprimary_mask].mean(dim=0)
+            primary_repr = torch.sum(
+                primary_weights.unsqueeze(-1) * vowel_states, dim=0
+            )
+            nonprimary_repr = torch.sum(
+                nonprimary_weights.unsqueeze(-1) * vowel_states, dim=0
+            )
 
             sim_primary = F.cosine_similarity(
                 ssd_word.unsqueeze(0), primary_repr.unsqueeze(0), dim=-1
