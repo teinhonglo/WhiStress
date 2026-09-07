@@ -160,19 +160,12 @@ def preprocess(example, model, phone_dict):
     vp_feats = nlp_model.vocab_profile_feats(transcription.split())
     pos_feats = vp_feats["pos_list"]
 
-    # 4. align word-level features to decoder positions.
-    #
-    # word_ids is the corrected logit-aligned mapping. It has exactly the
-    # same length and left-shift semantics as labels_head / token_pos.
-    #
-    # legacy_word_ids intentionally preserves the historical mapping used
-    # by the published STRAW/WSL experiments. Existing model types continue
-    # to consume it so that adding the corrected mapping does not change
-    # their training trajectories.
+    # 4. Align word-level features to decoder positions.
+    # word_ids has the same length and left-shift semantics as labels_head
+    # and token_pos, so word_ids[t] always describes logits[t].
     token_labels = []
     token_pos = []
     word_ids = []
-    legacy_word_ids = []
     word_idx = 0
     first_real_token = True
 
@@ -189,7 +182,6 @@ def preprocess(example, model, phone_dict):
             token_labels.append(label)
             token_pos.append(pos_map_dict[pos_feats[current_word_idx]])
             word_ids.append(current_word_idx)
-            legacy_word_ids.append(current_word_idx)
             word_idx += 1
             first_real_token = False
         else:  # subword
@@ -198,7 +190,6 @@ def preprocess(example, model, phone_dict):
             token_labels.append(label)
             token_pos.append(pos_map_dict[pos_feats[current_word_idx]])
             word_ids.append(current_word_idx)
-            legacy_word_ids.append(current_word_idx)
 
     # 5. LEFT SHIFT -> logits[t] predicts token[t+1].
     token_labels = token_labels[1:] + [-100]
@@ -222,7 +213,6 @@ def preprocess(example, model, phone_dict):
     example["decoder_input_ids"] = input_ids
     example["labels_head"] = token_labels
     example["word_ids"] = word_ids
-    example["legacy_word_ids"] = legacy_word_ids
     example["token_pos"] = token_pos
     example["phones"] = phones
     example["phone_ids"] = phone_ids
@@ -267,9 +257,6 @@ class StressDataset(torch.utils.data.Dataset):
             "transcription": item["transcription"],
             "stress_pattern_binary": item["stress_pattern"]["binary"],
             "word_ids": torch.tensor(item["word_ids"], dtype=torch.long),
-            "legacy_word_ids": torch.tensor(
-                item.get("legacy_word_ids", item["word_ids"]), dtype=torch.long
-            ),
             "token_pos_ids": torch.tensor(item["token_pos"], dtype=torch.long),
             "phones": item["phones"],
             "phone_ids": torch.tensor(item["phone_ids"], dtype=torch.long),
@@ -297,7 +284,6 @@ class MyCollate:
         
         decoder_input_ids = [b["decoder_input_ids"] for b in batch]
         word_ids = [b["word_ids"] for b in batch]
-        legacy_word_ids = [b["legacy_word_ids"] for b in batch]
         token_pos_ids = [b["token_pos_ids"] for b in batch]
         labels_head = [b["labels_head"] for b in batch]
         phone_ids = [b["phone_ids"] for b in batch]
@@ -310,9 +296,6 @@ class MyCollate:
             "audio_input": [b["audio_input"] for b in batch],
             "decoder_input_ids": pad_sequence(decoder_input_ids, batch_first=True, padding_value=self.processor.tokenizer.pad_token_id),
             "word_ids": pad_sequence(word_ids, batch_first=True, padding_value=-100),
-            "legacy_word_ids": pad_sequence(
-                legacy_word_ids, batch_first=True, padding_value=-100
-            ),
             "token_pos_ids": pad_sequence(token_pos_ids, batch_first=True, padding_value=-1),
             "labels_head": pad_sequence(labels_head, batch_first=True, padding_value=-100),
             "phone_ids": pad_sequence(phone_ids, batch_first=True, padding_value=-1),
