@@ -1,0 +1,38 @@
+[
+  {
+    "epochs": 20,
+    "batch_size": 16,
+    "init_lr": 0.0001,
+    "patience": -1,
+    "accumulate_gradient_steps": 1
+  },
+  {
+    "whisper_tag": "openai/whisper-small.en",
+    "layer_for_head": 9,
+    "model_type": "WhiStressPhnPairedResidual",
+    "loss_lambdas": {
+      "lambda_ssd": 1,
+      "lambda_wsd": 1,
+      "lambda_wsl": -1,
+      "lambda_rank": 1,
+      "lambda_mil": 0
+    },
+    "paired_residual_config": {
+      "wsd_to_ssd": true,
+      "ssd_to_wsd": true,
+      "residual_scale_init": 0,
+      "temperature": 1
+    },
+    "relation_loss_config": {
+      "margin": 0.2
+    },
+    "mil_loss_config": {
+      "temperature": 1
+    },
+    "initialization_config": {
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
+    }
+  }
+]
