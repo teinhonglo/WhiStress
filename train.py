@@ -224,11 +224,8 @@ if __name__ == "__main__":
     dataset["val"] = raw_train_dataset["test"]
     
     data_collate = MyCollate(processor=model.processor)
-    # Use versioned caches for the corrected token/logit-to-word alignment.
-    # Baseline/wordstress/POS predictions are unaffected because they do not
-    # consume word_ids unless a word-level loss is explicitly enabled.
-    train_processed_dir = "data/train_aligned_v2"
-    valid_processed_dir = "data/valid_aligned_v2"
+    train_processed_dir = "data/train"
+    valid_processed_dir = "data/valid"
     train_loader = DataLoader(
         StressDataset(
             hf_dataset_or_path=dataset["train"],
