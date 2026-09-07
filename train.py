@@ -224,15 +224,11 @@ if __name__ == "__main__":
     dataset["val"] = raw_train_dataset["test"]
     
     data_collate = MyCollate(processor=model.processor)
-    # Paired-residual experiments need the corrected token-word alignment and
-    # phone-to-word fields. Use separate caches so legacy experiments keep
-    # exactly the same processed data and training behavior.
-    train_processed_dir = (
-        "data/train_paired_v2" if is_paired_model else "data/train"
-    )
-    valid_processed_dir = (
-        "data/valid_paired_v2" if is_paired_model else "data/valid"
-    )
+    # Use versioned caches for the corrected token/logit-to-word alignment.
+    # Baseline/wordstress/POS predictions are unaffected because they do not
+    # consume word_ids unless a word-level loss is explicitly enabled.
+    train_processed_dir = "data/train_aligned_v2"
+    valid_processed_dir = "data/valid_aligned_v2"
     train_loader = DataLoader(
         StressDataset(
             hf_dataset_or_path=dataset["train"],
@@ -271,7 +267,6 @@ if __name__ == "__main__":
             phone_labels_head = batch["phone_labels_head"].to(device)
             token_pos_ids = batch["token_pos_ids"].to(device)
             aligned_word_ids = batch["word_ids"].to(device)
-            legacy_word_ids = batch["legacy_word_ids"].to(device)
             phone_word_ids = batch["phone_word_ids"].to(device)
             phone_vowel_mask = batch["phone_vowel_mask"].to(device)
 
@@ -282,11 +277,7 @@ if __name__ == "__main__":
                 "phone_ids": phone_ids,
                 "phone_labels_head": phone_labels_head,
                 "token_pos_ids": token_pos_ids,
-                # Preserve the exact historical WSL mapping for all legacy
-                # model types. New paired experiments use the corrected map.
-                "word_ids": (
-                    aligned_word_ids if is_paired_model else legacy_word_ids
-                ),
+                "word_ids": aligned_word_ids,
             }
             if is_paired_model:
                 model_inputs.update({
@@ -365,9 +356,7 @@ if __name__ == "__main__":
                     "phone_ids": phone_ids,
                     "phone_labels_head": phone_labels_head,
                     "token_pos_ids": token_pos_ids,
-                    "word_ids": (
-                        aligned_word_ids if is_paired_model else legacy_word_ids
-                    ),
+                    "word_ids": aligned_word_ids,
                 }
                 if is_paired_model:
                     model_inputs.update({
