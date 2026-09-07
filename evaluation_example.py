@@ -218,8 +218,26 @@ if __name__ == "__main__":
         model=model,
         processed_dir=str(processed_dir),
     )
-    metrics, metrics_wsd, error_cases, coverage = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, device=device)
-    metrics_wot, _, error_cases_wot, coverage_wot = calculate_metrics_on_dataset(dataset=dataset, whistress_client=whistress_client, with_transcription=False, device=device)
+    metrics, metrics_wsd, error_cases, coverage = calculate_metrics_on_dataset(
+        dataset=dataset,
+        whistress_client=whistress_client,
+        device=device,
+    )
+
+    # Paired SSD/WSD coupling requires transcript-derived phone/word structure.
+    # Do not silently report an uncoupled generate_dual() result as paired-model
+    # no-transcription performance.
+    if model.__class__.__name__ == "WhiStressPhnPairedResidual":
+        metrics_wot = None
+        error_cases_wot = []
+        coverage_wot = None
+    else:
+        metrics_wot, _, error_cases_wot, coverage_wot = calculate_metrics_on_dataset(
+            dataset=dataset,
+            whistress_client=whistress_client,
+            with_transcription=False,
+            device=device,
+        )
 
     corpus_stats = {
         "num_original_samples": len(raw_dataset),
