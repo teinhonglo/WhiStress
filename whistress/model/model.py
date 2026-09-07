@@ -941,6 +941,11 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
             self.lambda_mil = 0.0
 
         self.rank_margin = float(relation_loss_config.get("margin", 0.2))
+        self.rank_temperature = float(
+            relation_loss_config.get("temperature", 1.0)
+        )
+        if self.rank_temperature <= 0:
+            raise ValueError("ranking temperature must be positive")
         self.mil_temperature = float(
             mil_loss_config.get("temperature", 1.0)
         )
@@ -1144,12 +1149,14 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
             loss_rank = compute_cross_granularity_conditional_ranking_loss(
                 ssd_hidden_states=ssd_base,
                 phone_hidden_states=phone_base,
+                phone_stress_logits=preliminary_phone_logits,
                 labels_head=labels_head,
                 word_ids=word_ids,
                 phone_labels_head=phone_labels_head,
                 phone_word_ids=phone_word_ids,
                 phone_vowel_mask=phone_vowel_mask,
                 margin=self.rank_margin,
+                temperature=self.rank_temperature,
             )
             loss_terms.append(self.lambda_rank * loss_rank)
 
