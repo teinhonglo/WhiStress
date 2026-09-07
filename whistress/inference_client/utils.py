@@ -8,6 +8,7 @@ from ..model import (
     WhiStress,
     WhiStressPos,
     WhiStressPhn,
+    WhiStressPhnPairedResidual,
     WhiStressPhnIa,
 )
 import os
@@ -60,6 +61,17 @@ def get_loaded_model(device="cuda", metadata=None):
             whisper_backbone_name=whisper_model_name,
             pos_bias_config=metadata["pos_bias_config"],
         ).to(device)
+    elif model_type == "WhiStressPhnPairedResidual":
+        print("Inference WhiStressPhnPairedResidual")
+        whistress_model = WhiStressPhnPairedResidual(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            paired_residual_config=metadata.get("paired_residual_config", {}),
+            relation_loss_config=metadata.get("relation_loss_config", {}),
+            mil_loss_config=metadata.get("mil_loss_config", {}),
+        ).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Inference WhiStressPhnIa")
         whistress_model = WhiStressPhnIa(
@@ -81,7 +93,8 @@ def get_loaded_model(device="cuda", metadata=None):
         whistress_model.load_model(PATH_TO_WEIGHTS)
     else:
         if model_type in [
-            "WhiStressPos", "WhiStressPhn", "WhiStressPhnIa"
+            "WhiStressPos", "WhiStressPhn", "WhiStressPhnPairedResidual",
+            "WhiStressPhnIa"
         ]:
             print("Load All Weights")
             whistress_model.load_state_dict(torch.load(os.path.join(metadata["path_to_weights"], "model.pt")))
@@ -189,7 +202,15 @@ def merge_stressed_tokens(tokens_with_stress):
 
 
 def inference_from_audio_and_transcription(
-    audio: np.ndarray, transcription, model: WhiStress, device: str, phone_ids=None, token_pos_ids=None,
+    audio: np.ndarray,
+    transcription,
+    model: WhiStress,
+    device: str,
+    phone_ids=None,
+    token_pos_ids=None,
+    word_ids=None,
+    phone_word_ids=None,
+    phone_vowel_mask=None,
 ):
     input_features = model.processor.feature_extractor(
         audio, sampling_rate=16000, return_tensors="pt"
@@ -201,12 +222,19 @@ def inference_from_audio_and_transcription(
         truncation=True,
         max_length=50,
     )["input_ids"]
-    out_model = model(
-                    input_features=input_features.to(device),
-                    decoder_input_ids=input_ids.to(device),
-                    phone_ids=phone_ids,
-                    token_pos_ids=token_pos_ids
-                )
+    model_inputs = {
+        "input_features": input_features.to(device),
+        "decoder_input_ids": input_ids.to(device),
+        "phone_ids": phone_ids,
+        "token_pos_ids": token_pos_ids,
+    }
+    if model.__class__.__name__ == "WhiStressPhnPairedResidual":
+        model_inputs.update({
+            "word_ids": word_ids,
+            "phone_word_ids": phone_word_ids,
+            "phone_vowel_mask": phone_vowel_mask,
+        })
+    out_model = model(**model_inputs)
     emphasis_probs = F.softmax(out_model.logits, dim=-1)
     emphasis_preds = torch.argmax(emphasis_probs, dim=-1)
     emphasis_preds_right_shifted = torch.cat((emphasis_preds[:, -1:], emphasis_preds[:, :-1]), dim=1)
@@ -224,12 +252,33 @@ def inference_from_audio_and_transcription(
      
     return word_emphasis_pairs, phone_stress_preds
 
-def scored_transcription(audio, model, strip_words=True, transcription: str = None, device="cuda", phone_ids=None, token_pos_ids=None):
+def scored_transcription(
+    audio,
+    model,
+    strip_words=True,
+    transcription: str = None,
+    device="cuda",
+    phone_ids=None,
+    token_pos_ids=None,
+    word_ids=None,
+    phone_word_ids=None,
+    phone_vowel_mask=None,
+):
     audio_arr = prepare_audio(audio)
     token_stress_pairs, phone_stress_preds = None, None
     if transcription: # if we want to use the ground truth transcription
         # TODO phone_ids & token_pos_ids
-        token_stress_pairs, phone_stress_preds = inference_from_audio_and_transcription(audio_arr, transcription, model, device, phone_ids, token_pos_ids)
+        token_stress_pairs, phone_stress_preds = inference_from_audio_and_transcription(
+            audio_arr,
+            transcription,
+            model,
+            device,
+            phone_ids,
+            token_pos_ids,
+            word_ids,
+            phone_word_ids,
+            phone_vowel_mask,
+        )
     else:
         token_stress_pairs = inference_from_audio(audio_arr, model, device)
     
