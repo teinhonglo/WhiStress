@@ -24,7 +24,8 @@
       "temperature": 1
     },
     "relation_loss_config": {
-      "margin": 0.2
+      "margin": 0.2,
+      "temperature": 1
     },
     "mil_loss_config": {
       "temperature": 1
