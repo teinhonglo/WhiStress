@@ -340,7 +340,6 @@ if __name__ == "__main__":
                 phone_labels_head = batch["phone_labels_head"].to(device)
                 token_pos_ids = batch["token_pos_ids"].to(device)
                 word_ids = batch["word_ids"].to(device)
-                legacy_word_ids = batch["legacy_word_ids"].to(device)
                 phone_word_ids = batch["phone_word_ids"].to(device)
                 phone_vowel_mask = batch["phone_vowel_mask"].to(device)
 
