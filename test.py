@@ -44,7 +44,10 @@ if __name__ == "__main__":
     model = get_loaded_model(device=device, metadata=metadata)
 
     dataset = load_corpus(args.corpus, args.split, args.data_root / "raw")
-    is_paired_model = model.__class__.__name__ == "WhiStressPhnPairedResidual"
+    is_paired_model = model.__class__.__name__ in (
+        "WhiStressPhnPairedResidual",
+        "WhiStressPhnLocusCoupled",
+    )
     processed_dir = args.data_root / "processed" / args.corpus / args.split
     data_collate = MyCollate(processor=model.processor)
     val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset, model=model, processed_dir=str(processed_dir)), batch_size=args.batch_size, collate_fn=data_collate)
