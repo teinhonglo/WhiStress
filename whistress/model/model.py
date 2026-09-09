@@ -15,6 +15,7 @@ from typing import Optional
 import json
 import math
 from whistress.model.modules.net_utils import MeanPooling
+from whistress.model.modules.stress_realization import StressRealizationCoupling
 from losses import (
     compute_adaptive_weighted_loss,
     compute_cross_granularity_conditional_ranking_loss,
@@ -39,6 +40,8 @@ class CustomPhnModelOutput(BaseModelOutput):
     loss_wsl: Optional[torch.FloatTensor] = None
     loss_rank: Optional[torch.FloatTensor] = None
     loss_mil: Optional[torch.FloatTensor] = None
+    loss_preliminary: Optional[torch.FloatTensor] = None
+    loss_realization: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
     phone_stress_logits: torch.FloatTensor = None
     head_preds: torch.FloatTensor = None
@@ -1210,6 +1213,224 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
 
     def __str__(self):
         return "WhiStressPhnPairedResidual"
+
+
+class WhiStressPhnRealization(WhiStressPhn):
+    """Couple SSD prominence and WSD locus through stress realization.
+
+    Unlike paired residual coupling, this model does not exchange raw hidden
+    vectors. It uses preliminary task predictions to build a word-local,
+    vowel-level realization variable, then performs one bidirectional
+    refinement step in logit space.
+    """
+
+    def __init__(
+        self,
+        config: WhisperConfig,
+        layer_for_head: Optional[int] = None,
+        whisper_backbone_name="openai/whisper-small.en",
+        class_weights=[1.0, 2.33],
+        num_phones=39,
+        loss_lambdas=None,
+        realization_config=None,
+    ):
+        super().__init__(
+            config=config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_backbone_name,
+            class_weights=class_weights,
+            num_phones=num_phones,
+            loss_lambdas=loss_lambdas,
+        )
+        realization_config = realization_config or {}
+        self.realization_coupling = StressRealizationCoupling(
+            d_model=self.config.d_model,
+            temperature=realization_config.get("temperature", 1.0),
+            margin=realization_config.get("margin", 0.2),
+            sentence_to_lexical_gate_init=realization_config.get(
+                "sentence_to_lexical_gate_init", 0.01
+            ),
+            lexical_to_sentence_gate_init=realization_config.get(
+                "lexical_to_sentence_gate_init", 0.01
+            ),
+        )
+        if loss_lambdas:
+            self.lambda_preliminary = float(
+                loss_lambdas.get("lambda_preliminary", 0.0)
+            )
+            self.lambda_realization = float(
+                loss_lambdas.get("lambda_realization", 0.0)
+            )
+        else:
+            self.lambda_preliminary = 0.0
+            self.lambda_realization = 0.0
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+        for param in self.realization_coupling.parameters():
+            param.requires_grad = True
+        self.realization_coupling.train(mode)
+        return self
+
+    def forward(
+        self,
+        input_features,
+        attention_mask=None,
+        decoder_input_ids=None,
+        labels_head=None,
+        whisper_labels=None,
+        phone_ids=None,
+        phone_labels_head=None,
+        token_pos_ids=None,
+        word_ids=None,
+        phone_word_ids=None,
+        phone_vowel_mask=None,
+    ):
+        if phone_ids is None:
+            raise ValueError(
+                "phone_ids is required for WhiStressPhnRealization.forward"
+            )
+        if word_ids is None or phone_word_ids is None or phone_vowel_mask is None:
+            raise ValueError(
+                "word_ids, phone_word_ids, and phone_vowel_mask are required "
+                "for stress-realization coupling"
+            )
+
+        device = input_features.device
+        self.whisper_model.eval()
+        backbone_outputs = self.whisper_model(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            output_hidden_states=True,
+            labels=whisper_labels,
+        )
+        decoder_hidden_states = backbone_outputs.decoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+        encoder_hidden_states = backbone_outputs.encoder_hidden_states[
+            self.layer_for_head
+        ].to(device)
+
+        ssd_hidden_states = self.additional_decoder_block(
+            hidden_states=decoder_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+        )[0].to(device)
+        phone_hidden_states = self.phone_decoder(
+            tgt=self.phone_embed(phone_ids + 1),
+            memory=encoder_hidden_states,
+        )
+
+        preliminary_ssd_logits = self.classifier(ssd_hidden_states)
+        preliminary_phone_logits = self.phone_stress_classifier(
+            phone_hidden_states
+        )
+        (
+            ssd_logit_delta,
+            phone_logit_delta,
+            loss_realization,
+        ) = self.realization_coupling(
+            ssd_hidden_states=ssd_hidden_states,
+            phone_hidden_states=phone_hidden_states,
+            preliminary_ssd_logits=preliminary_ssd_logits,
+            preliminary_phone_logits=preliminary_phone_logits,
+            word_ids=word_ids,
+            phone_word_ids=phone_word_ids,
+            phone_vowel_mask=phone_vowel_mask,
+            labels_head=labels_head,
+        )
+
+        head_logits = preliminary_ssd_logits + ssd_logit_delta
+        phone_stress_logits = preliminary_phone_logits + phone_logit_delta
+        preds = F.softmax(head_logits, dim=-1).argmax(dim=-1).to(device)
+        phone_stress_preds = F.softmax(
+            phone_stress_logits, dim=-1
+        ).argmax(dim=-1).to(device)
+
+        loss_terms = []
+        preliminary_terms = []
+        loss_main = None
+        loss_wsd = None
+        loss_wsl = None
+        loss_preliminary = None
+
+        if labels_head is not None:
+            preds = torch.where(
+                labels_head == -100,
+                torch.tensor(-100, device=device),
+                preds,
+            )
+            loss_main = self.loss_fct(
+                head_logits.reshape(-1, head_logits.size(-1)),
+                labels_head.reshape(-1),
+            )
+            if self.lambda_ssd > 0.0:
+                loss_terms.append(self.lambda_ssd * loss_main)
+                preliminary_terms.append(
+                    self.lambda_ssd
+                    * self.loss_fct(
+                        preliminary_ssd_logits.reshape(
+                            -1, preliminary_ssd_logits.size(-1)
+                        ),
+                        labels_head.reshape(-1),
+                    )
+                )
+
+        if phone_labels_head is not None and self.lambda_wsd > 0.0:
+            phone_stress_preds = torch.where(
+                phone_labels_head == -100,
+                torch.tensor(-100, device=device),
+                phone_stress_preds,
+            )
+            loss_wsd = self.phone_loss_fct(
+                phone_stress_logits.reshape(-1, phone_stress_logits.size(-1)),
+                phone_labels_head.reshape(-1),
+            )
+            loss_terms.append(self.lambda_wsd * loss_wsd)
+            preliminary_terms.append(
+                self.lambda_wsd
+                * self.phone_loss_fct(
+                    preliminary_phone_logits.reshape(
+                        -1, preliminary_phone_logits.size(-1)
+                    ),
+                    phone_labels_head.reshape(-1),
+                )
+            )
+
+        if preliminary_terms:
+            loss_preliminary = torch.stack(preliminary_terms).sum()
+            if self.lambda_preliminary > 0.0:
+                loss_terms.append(
+                    self.lambda_preliminary * loss_preliminary
+                )
+
+        if loss_realization is not None and self.lambda_realization > 0.0:
+            loss_terms.append(self.lambda_realization * loss_realization)
+
+        if labels_head is not None and self.lambda_wsl > 0.0:
+            loss_wsl = compute_adaptive_weighted_loss(
+                head_logits, labels_head, word_ids
+            )
+            loss_terms.append(self.lambda_wsl * loss_wsl)
+
+        loss = torch.stack(loss_terms).sum() if loss_terms else None
+        return CustomPhnModelOutput(
+            logits=head_logits,
+            labels_head=labels_head,
+            phone_stress_logits=phone_stress_logits,
+            whisper_logits=backbone_outputs.logits,
+            loss=loss,
+            loss_main=loss_main,
+            loss_wsd=loss_wsd,
+            loss_wsl=loss_wsl,
+            loss_preliminary=loss_preliminary,
+            loss_realization=loss_realization,
+            preds=preds,
+            phone_stress_preds=phone_stress_preds,
+        )
+
+    def __str__(self):
+        return "WhiStressPhnRealization"
 
 
 class WhiStressPhnIa(WhiStressPhn):

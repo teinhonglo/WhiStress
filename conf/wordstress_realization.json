@@ -1,0 +1,32 @@
+[
+  {
+    "epochs": 20,
+    "batch_size": 16,
+    "init_lr": 0.0001,
+    "patience": -1,
+    "accumulate_gradient_steps": 1
+  },
+  {
+    "whisper_tag": "openai/whisper-small.en",
+    "layer_for_head": 9,
+    "model_type": "WhiStressPhnRealization",
+    "loss_lambdas": {
+      "lambda_ssd": 1,
+      "lambda_wsd": 1,
+      "lambda_wsl": -1,
+      "lambda_preliminary": 0.5,
+      "lambda_realization": 0.1
+    },
+    "realization_config": {
+      "temperature": 1,
+      "margin": 0.2,
+      "sentence_to_lexical_gate_init": 0.01,
+      "lexical_to_sentence_gate_init": 0.01
+    },
+    "initialization_config": {
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
+    }
+  }
+]

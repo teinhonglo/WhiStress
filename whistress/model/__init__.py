@@ -3,5 +3,6 @@ from .model import (
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
+    WhiStressPhnRealization,
     WhiStressPhnIa,
 )

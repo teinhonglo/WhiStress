@@ -9,6 +9,7 @@ from ..model import (
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
+    WhiStressPhnRealization,
     WhiStressPhnIa,
 )
 import os
@@ -72,6 +73,15 @@ def get_loaded_model(device="cuda", metadata=None):
             relation_loss_config=metadata.get("relation_loss_config", {}),
             mil_loss_config=metadata.get("mil_loss_config", {}),
         ).to(device)
+    elif model_type == "WhiStressPhnRealization":
+        print("Inference WhiStressPhnRealization")
+        whistress_model = WhiStressPhnRealization(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            realization_config=metadata.get("realization_config", {}),
+        ).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Inference WhiStressPhnIa")
         whistress_model = WhiStressPhnIa(
@@ -94,6 +104,7 @@ def get_loaded_model(device="cuda", metadata=None):
     else:
         if model_type in [
             "WhiStressPos", "WhiStressPhn", "WhiStressPhnPairedResidual",
+            "WhiStressPhnRealization",
             "WhiStressPhnIa"
         ]:
             print("Load All Weights")
@@ -228,7 +239,10 @@ def inference_from_audio_and_transcription(
         "phone_ids": phone_ids,
         "token_pos_ids": token_pos_ids,
     }
-    if model.__class__.__name__ == "WhiStressPhnPairedResidual":
+    if model.__class__.__name__ in {
+        "WhiStressPhnPairedResidual",
+        "WhiStressPhnRealization",
+    }:
         model_inputs.update({
             "word_ids": word_ids,
             "phone_word_ids": phone_word_ids,

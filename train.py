@@ -22,6 +22,7 @@ from whistress.model.model import (
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
+    WhiStressPhnRealization,
     WhiStressPhnIa,
 )
 
@@ -58,6 +59,7 @@ if __name__ == "__main__":
     paired_residual_config = model_args.get("paired_residual_config", None)
     relation_loss_config = model_args.get("relation_loss_config", None)
     mil_loss_config = model_args.get("mil_loss_config", None)
+    realization_config = model_args.get("realization_config", None)
     initialization_config = model_args.get("initialization_config", {})
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
@@ -98,9 +100,14 @@ if __name__ == "__main__":
         hyper_params["paired_residual_config"] = paired_residual_config or {}
         hyper_params["relation_loss_config"] = relation_loss_config or {}
         hyper_params["mil_loss_config"] = mil_loss_config or {}
+    if model_type == "WhiStressPhnRealization":
+        hyper_params["realization_config"] = realization_config or {}
 
     is_pos_model = model_type == "WhiStressPos"
-    is_paired_model = model_type == "WhiStressPhnPairedResidual"
+    requires_word_phone_alignment = model_type in {
+        "WhiStressPhnPairedResidual",
+        "WhiStressPhnRealization",
+    }
     train_from_scratch = initialization_config.get("train_from_scratch", True)
     parent_checkpoint_dir = initialization_config.get("checkpoint_dir")
     freeze_pretrained_heads = initialization_config.get(
@@ -159,6 +166,15 @@ if __name__ == "__main__":
                     paired_residual_config=paired_residual_config,
                     relation_loss_config=relation_loss_config,
                     mil_loss_config=mil_loss_config).to(device)
+    elif model_type == "WhiStressPhnRealization":
+        print("Train WhiStressPhnRealization")
+        model = WhiStressPhnRealization(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    realization_config=realization_config).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Train WhiStressPhnIa")
         model = WhiStressPhnIa(config=config, 
@@ -251,6 +267,7 @@ if __name__ == "__main__":
         model.train()
         total_loss, total_loss_main, total_loss_wsd, total_loss_wsl = 0.0, 0.0, 0.0, 0.0
         total_loss_rank, total_loss_mil = 0.0, 0.0
+        total_loss_preliminary, total_loss_realization = 0.0, 0.0
         train_all_preds, train_all_labels = [], []
         for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
             audio_array = [x["array"] for x in batch["audio_input"]]
@@ -274,7 +291,7 @@ if __name__ == "__main__":
                 "token_pos_ids": token_pos_ids,
                 "word_ids": word_ids,
             }
-            if is_paired_model:
+            if requires_word_phone_alignment:
                 model_inputs.update({
                     "phone_word_ids": phone_word_ids,
                     "phone_vowel_mask": phone_vowel_mask,
@@ -286,6 +303,8 @@ if __name__ == "__main__":
             loss_wsl = output.loss_wsl
             loss_rank = output.loss_rank
             loss_mil = output.loss_mil
+            loss_preliminary = output.loss_preliminary
+            loss_realization = output.loss_realization
             loss = output.loss
             
             loss = loss / accumulate_gradient_steps
@@ -313,6 +332,10 @@ if __name__ == "__main__":
                 total_loss_rank += loss_rank.item()
             if loss_mil is not None:
                 total_loss_mil += loss_mil.item()
+            if loss_preliminary is not None:
+                total_loss_preliminary += loss_preliminary.item()
+            if loss_realization is not None:
+                total_loss_realization += loss_realization.item()
 
         train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
         print(
@@ -322,6 +345,8 @@ if __name__ == "__main__":
             f"WSL: {total_loss_wsl / len(train_loader):.4f}, "
             f"Rank: {total_loss_rank / len(train_loader):.4f}, "
             f"MIL: {total_loss_mil / len(train_loader):.4f}, "
+            f"Preliminary: {total_loss_preliminary / len(train_loader):.4f}, "
+            f"Realization: {total_loss_realization / len(train_loader):.4f}, "
             f"Precision: {train_prf['precision']:.4f}, "
             f"Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}"
         )
@@ -352,7 +377,7 @@ if __name__ == "__main__":
                     "token_pos_ids": token_pos_ids,
                     "word_ids": word_ids,
                 }
-                if is_paired_model:
+                if requires_word_phone_alignment:
                     model_inputs.update({
                         "phone_word_ids": phone_word_ids,
                         "phone_vowel_mask": phone_vowel_mask,

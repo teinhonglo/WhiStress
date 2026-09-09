@@ -44,7 +44,10 @@ if __name__ == "__main__":
     model = get_loaded_model(device=device, metadata=metadata)
 
     dataset = load_corpus(args.corpus, args.split, args.data_root / "raw")
-    is_paired_model = model.__class__.__name__ == "WhiStressPhnPairedResidual"
+    requires_word_phone_alignment = model.__class__.__name__ in {
+        "WhiStressPhnPairedResidual",
+        "WhiStressPhnRealization",
+    }
     processed_dir = args.data_root / "processed" / args.corpus / args.split
     data_collate = MyCollate(processor=model.processor)
     val_loader = DataLoader(StressDataset(hf_dataset_or_path=dataset, model=model, processed_dir=str(processed_dir)), batch_size=args.batch_size, collate_fn=data_collate)
@@ -82,7 +85,7 @@ if __name__ == "__main__":
                 "token_pos_ids": token_pos_ids,
                 "word_ids": word_ids,
             }
-            if is_paired_model:
+            if requires_word_phone_alignment:
                 model_inputs.update({
                     "phone_word_ids": phone_word_ids,
                     "phone_vowel_mask": phone_vowel_mask,
