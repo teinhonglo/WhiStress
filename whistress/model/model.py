@@ -1213,13 +1213,13 @@ class WhiStressPhnPairedResidual(WhiStressPhn):
 
 
 class WhiStressPhnLocusCoupled(WhiStressPhn):
-    """Asymmetric, word-local SSD/WSD coupling with explicit semantics.
+    """Word-local SSD/WSD coupling with WSD acoustic-locus guidance.
 
-    WSD -> SSD converts predicted primary-vowel probabilities and phone-to-
-    encoder attention into a soft acoustic-locus bias for the SSD decoder's
-    cross-attention. SSD -> WSD uses predicted word-prominence probability to
-    scale an accent-conditioned correction to the WSD logits. Ground-truth
-    stress labels are never used as forward routing signals.
+    Predicted primary-vowel weights and phone-to-encoder attention are
+    converted into a soft acoustic-locus bias for the SSD decoder. The
+    existing paired residual carries the resulting SSD word representation
+    back to WSD vowel phones. Ground-truth stress labels are never used as
+    forward routing signals.
     """
 
     def __init__(
@@ -1254,15 +1254,6 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         if self.paired_temperature <= 0.0:
             raise ValueError("locus_coupling temperature must be positive")
 
-        self.locus_epsilon = float(
-            locus_coupling_config.get("locus_epsilon", 1e-6)
-        )
-        if not 0.0 < self.locus_epsilon < 1.0:
-            raise ValueError("locus_epsilon must be strictly between 0 and 1")
-
-        self.use_phone_position_encoding = bool(
-            locus_coupling_config.get("use_phone_position_encoding", True)
-        )
         coupling_scale_init = float(
             locus_coupling_config.get("scale_init", 0.0)
         )
@@ -1273,113 +1264,61 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
             torch.tensor(coupling_scale_init)
         )
 
-        # This head learns the change in WSD acoustic-cue interpretation under
-        # predicted sentence prominence. The base WSD classifier remains the
-        # locator and the default/unaccented WSD predictor.
-        self.wsd_accent_correction = nn.Linear(self.config.d_model, 2)
+        cpu_rng_state = torch.get_rng_state()
+        self.ssd_to_wsd_proj = nn.Linear(
+            self.config.d_model,
+            self.config.d_model,
+            bias=False,
+        )
+        nn.init.eye_(self.ssd_to_wsd_proj.weight)
+        torch.set_rng_state(cpu_rng_state)
 
     def train(self, mode: Optional[bool] = True):
         super().train(mode)
-        for param in self.wsd_accent_correction.parameters():
-            param.requires_grad = True
-        self.wsd_accent_correction.train(mode)
         self.wsd_to_ssd_scale.requires_grad = True
         self.ssd_to_wsd_scale.requires_grad = True
+        for param in self.ssd_to_wsd_proj.parameters():
+            param.requires_grad = True
+        self.ssd_to_wsd_proj.train(mode)
         return self
-
-    @staticmethod
-    def _sinusoidal_position_encoding(length, d_model, device, dtype):
-        positions = torch.arange(
-            length, device=device, dtype=torch.float32
-        ).unsqueeze(1)
-        frequencies = torch.exp(
-            torch.arange(0, d_model, 2, device=device, dtype=torch.float32)
-            * (-math.log(10000.0) / d_model)
-        )
-        encoding = torch.zeros(
-            length, d_model, device=device, dtype=torch.float32
-        )
-        encoding[:, 0::2] = torch.sin(positions * frequencies)
-        if d_model > 1:
-            encoding[:, 1::2] = torch.cos(
-                positions * frequencies[: encoding[:, 1::2].shape[1]]
-            )
-        return encoding.to(dtype=dtype).unsqueeze(0)
 
     def _decode_phones_with_cross_attention(
         self,
         phone_embeddings,
         encoder_hidden_states,
-        phone_padding_mask,
     ):
-        """Run the existing one-layer phone decoder and expose cross-attention."""
-        if len(self.phone_decoder.layers) != 1:
-            raise ValueError(
-                "WhiStressPhnLocusCoupled requires a one-layer phone decoder"
-            )
+        """Use the existing phone decoder and capture its cross-attention."""
+        captured_weights = []
+        cross_attention = self.phone_decoder.layers[-1].multihead_attn
 
-        layer = self.phone_decoder.layers[0]
-        hidden_states = phone_embeddings
+        def request_attention_weights(module, args, kwargs):
+            kwargs = dict(kwargs)
+            kwargs["need_weights"] = True
+            kwargs["average_attn_weights"] = True
+            return args, kwargs
 
-        if layer.norm_first:
-            normalized = layer.norm1(hidden_states)
-            self_attn_output = layer.self_attn(
-                normalized,
-                normalized,
-                normalized,
-                key_padding_mask=phone_padding_mask,
-                need_weights=False,
-            )[0]
-            hidden_states = hidden_states + layer.dropout1(self_attn_output)
+        def capture_attention_weights(module, args, output):
+            captured_weights.append(output[1])
 
-            normalized = layer.norm2(hidden_states)
-            cross_attn_output, cross_attn_weights = layer.multihead_attn(
-                normalized,
-                encoder_hidden_states,
-                encoder_hidden_states,
-                need_weights=True,
-                average_attn_weights=True,
+        pre_hook = cross_attention.register_forward_pre_hook(
+            request_attention_weights,
+            with_kwargs=True,
+        )
+        post_hook = cross_attention.register_forward_hook(
+            capture_attention_weights
+        )
+        try:
+            hidden_states = self.phone_decoder(
+                tgt=phone_embeddings,
+                memory=encoder_hidden_states,
             )
-            hidden_states = hidden_states + layer.dropout2(cross_attn_output)
+        finally:
+            pre_hook.remove()
+            post_hook.remove()
 
-            normalized = layer.norm3(hidden_states)
-            feed_forward = layer.linear2(
-                layer.dropout(layer.activation(layer.linear1(normalized)))
-            )
-            hidden_states = hidden_states + layer.dropout3(feed_forward)
-        else:
-            self_attn_output = layer.self_attn(
-                hidden_states,
-                hidden_states,
-                hidden_states,
-                key_padding_mask=phone_padding_mask,
-                need_weights=False,
-            )[0]
-            hidden_states = layer.norm1(
-                hidden_states + layer.dropout1(self_attn_output)
-            )
-
-            cross_attn_output, cross_attn_weights = layer.multihead_attn(
-                hidden_states,
-                encoder_hidden_states,
-                encoder_hidden_states,
-                need_weights=True,
-                average_attn_weights=True,
-            )
-            hidden_states = layer.norm2(
-                hidden_states + layer.dropout2(cross_attn_output)
-            )
-
-            feed_forward = layer.linear2(
-                layer.dropout(layer.activation(layer.linear1(hidden_states)))
-            )
-            hidden_states = layer.norm3(
-                hidden_states + layer.dropout3(feed_forward)
-            )
-
-        if self.phone_decoder.norm is not None:
-            hidden_states = self.phone_decoder.norm(hidden_states)
-        return hidden_states, cross_attn_weights
+        if not captured_weights or captured_weights[0] is None:
+            raise RuntimeError("Phone decoder did not return cross-attention weights")
+        return hidden_states, captured_weights[0]
 
     def _build_ssd_locus_bias(
         self,
@@ -1413,11 +1352,9 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
                     continue
 
                 vowel_scores = primary_margins[b][vowel_mask]
-                primary_weights = torch.sigmoid(
-                    vowel_scores / self.paired_temperature
-                )
-                primary_weights = primary_weights / primary_weights.sum().clamp_min(
-                    self.locus_epsilon
+                primary_weights = F.softmax(
+                    vowel_scores / self.paired_temperature,
+                    dim=0,
                 )
 
                 vowel_attentions = phone_cross_attentions[b][vowel_mask]
@@ -1425,37 +1362,28 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
                     primary_weights.unsqueeze(-1) * vowel_attentions,
                     dim=0,
                 )
+                epsilon = torch.finfo(acoustic_locus.dtype).eps
                 acoustic_locus = acoustic_locus / acoustic_locus.sum().clamp_min(
-                    self.locus_epsilon
+                    epsilon
                 )
-
-                if num_vowels == 1:
-                    confidence = acoustic_locus.new_tensor(1.0)
-                else:
-                    entropy = -torch.sum(
-                        primary_weights
-                        * torch.log(primary_weights.clamp_min(self.locus_epsilon))
-                    )
-                    confidence = 1.0 - entropy / math.log(num_vowels)
-
-                locus_bias[b][token_mask] = confidence * torch.log(
-                    acoustic_locus.clamp_min(self.locus_epsilon)
+                locus_bias[b][token_mask] = torch.log(
+                    acoustic_locus.clamp_min(epsilon)
                 )
 
         return locus_bias
 
     @staticmethod
-    def _build_phone_prominence_probabilities(
-        ssd_logits,
+    def _build_ssd_context_for_phones(
+        ssd_hidden_states,
         word_ids,
         phone_word_ids,
         phone_vowel_mask,
     ):
-        """Broadcast predicted word-level SSD probability to its vowel phones."""
-        phone_prominence = ssd_logits.new_zeros(phone_word_ids.shape)
-        ssd_margins = ssd_logits[..., 1] - ssd_logits[..., 0]
+        """Copy each SSD word representation to its vowel phones."""
+        context_shape = (*phone_word_ids.shape, ssd_hidden_states.size(-1))
+        ssd_context_for_phones = ssd_hidden_states.new_zeros(context_shape)
 
-        for b in range(ssd_logits.size(0)):
+        for b in range(ssd_hidden_states.size(0)):
             valid_word_ids = torch.unique(word_ids[b][word_ids[b] >= 0])
             for wid in valid_word_ids:
                 token_mask = word_ids[b] == wid
@@ -1465,12 +1393,10 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
                 )
                 if not token_mask.any() or not vowel_mask.any():
                     continue
-                word_probability = torch.sigmoid(
-                    ssd_margins[b][token_mask].mean()
-                )
-                phone_prominence[b][vowel_mask] = word_probability
+                ssd_word_repr = ssd_hidden_states[b][token_mask].mean(dim=0)
+                ssd_context_for_phones[b][vowel_mask] = ssd_word_repr
 
-        return phone_prominence
+        return ssd_context_for_phones
 
     def forward(
         self,
@@ -1519,22 +1445,10 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         ].to(device)
 
         phone_embeddings = self.phone_embed(phone_ids + 1)
-        phone_padding_mask = phone_ids == -1
-        if self.use_phone_position_encoding:
-            phone_embeddings = phone_embeddings + self._sinusoidal_position_encoding(
-                phone_embeddings.size(1),
-                phone_embeddings.size(2),
-                phone_embeddings.device,
-                phone_embeddings.dtype,
-            )
-        phone_embeddings = phone_embeddings.masked_fill(
-            phone_padding_mask.unsqueeze(-1), 0.0
-        )
         phone_base, phone_cross_attentions = (
             self._decode_phones_with_cross_attention(
                 phone_embeddings,
                 encoder_hidden_states,
-                phone_padding_mask,
             )
         )
         preliminary_phone_logits = self.phone_stress_classifier(phone_base)
@@ -1549,7 +1463,7 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
                 phone_vowel_mask=phone_vowel_mask,
             )
             ssd_encoder_attention_mask = (
-                torch.tanh(self.wsd_to_ssd_scale) * locus_bias
+                self.wsd_to_ssd_scale * locus_bias
             ).unsqueeze(1)
 
         ssd_hidden_states = self.additional_decoder_block(
@@ -1561,21 +1475,23 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         head_probs = F.softmax(head_logits, dim=-1)
         preds = head_probs.argmax(dim=-1).to(device)
 
-        phone_stress_logits = preliminary_phone_logits
+        phone_hidden_states = phone_base
         if self.enable_ssd_to_wsd:
-            phone_prominence = self._build_phone_prominence_probabilities(
-                ssd_logits=head_logits,
+            ssd_context_for_phones = self._build_ssd_context_for_phones(
+                ssd_hidden_states=ssd_hidden_states,
                 word_ids=word_ids,
                 phone_word_ids=phone_word_ids,
                 phone_vowel_mask=phone_vowel_mask,
             )
-            accent_correction = self.wsd_accent_correction(phone_base)
-            phone_stress_logits = (
-                phone_stress_logits
-                + torch.tanh(self.ssd_to_wsd_scale)
-                * phone_prominence.unsqueeze(-1)
-                * accent_correction
+            phone_hidden_states = (
+                phone_hidden_states
+                + self.ssd_to_wsd_scale
+                * self.ssd_to_wsd_proj(ssd_context_for_phones)
             )
+
+        phone_stress_logits = self.phone_stress_classifier(
+            phone_hidden_states
+        )
 
         phone_stress_probs = F.softmax(phone_stress_logits, dim=-1)
         phone_stress_preds = phone_stress_probs.argmax(dim=-1).to(device)

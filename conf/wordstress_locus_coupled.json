@@ -19,9 +19,7 @@
       "wsd_to_ssd": true,
       "ssd_to_wsd": true,
       "scale_init": 0,
-      "temperature": 1,
-      "locus_epsilon": 0.000001,
-      "use_phone_position_encoding": true
+      "temperature": 1
     },
     "initialization_config": {
       "train_from_scratch": true,
