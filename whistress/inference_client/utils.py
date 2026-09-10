@@ -9,6 +9,8 @@ from ..model import (
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
+    WhiStressPhnLocusCoupled,
+    WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
 import os
@@ -72,6 +74,28 @@ def get_loaded_model(device="cuda", metadata=None):
             relation_loss_config=metadata.get("relation_loss_config", {}),
             mil_loss_config=metadata.get("mil_loss_config", {}),
         ).to(device)
+    elif model_type == "WhiStressPhnLocusCoupled":
+        print("Inference WhiStressPhnLocusCoupled")
+        whistress_model = WhiStressPhnLocusCoupled(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            locus_coupling_config=metadata.get(
+                "locus_coupling_config", {}
+            ),
+        ).to(device)
+    elif model_type == "WhiStressPhnLocusCoupledRealization":
+        print("Inference WhiStressPhnLocusCoupledRealization")
+        whistress_model = WhiStressPhnLocusCoupledRealization(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            locus_coupling_config=metadata.get(
+                "locus_coupling_config", {}
+            ),
+        ).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Inference WhiStressPhnIa")
         whistress_model = WhiStressPhnIa(
@@ -94,7 +118,8 @@ def get_loaded_model(device="cuda", metadata=None):
     else:
         if model_type in [
             "WhiStressPos", "WhiStressPhn", "WhiStressPhnPairedResidual",
-            "WhiStressPhnIa"
+            "WhiStressPhnLocusCoupled",
+            "WhiStressPhnLocusCoupledRealization", "WhiStressPhnIa"
         ]:
             print("Load All Weights")
             whistress_model.load_state_dict(torch.load(os.path.join(metadata["path_to_weights"], "model.pt")))
@@ -228,7 +253,7 @@ def inference_from_audio_and_transcription(
         "phone_ids": phone_ids,
         "token_pos_ids": token_pos_ids,
     }
-    if model.__class__.__name__ == "WhiStressPhnPairedResidual":
+    if getattr(model, "requires_word_alignment", False):
         model_inputs.update({
             "word_ids": word_ids,
             "phone_word_ids": phone_word_ids,

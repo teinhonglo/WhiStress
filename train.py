@@ -22,6 +22,8 @@ from whistress.model.model import (
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
+    WhiStressPhnLocusCoupled,
+    WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
 
@@ -56,6 +58,7 @@ if __name__ == "__main__":
     layer_for_head = model_args["layer_for_head"]
     pos_bias_config = model_args.get("pos_bias_config", None)
     paired_residual_config = model_args.get("paired_residual_config", None)
+    locus_coupling_config = model_args.get("locus_coupling_config", None)
     relation_loss_config = model_args.get("relation_loss_config", None)
     mil_loss_config = model_args.get("mil_loss_config", None)
     initialization_config = model_args.get("initialization_config", {})
@@ -98,9 +101,13 @@ if __name__ == "__main__":
         hyper_params["paired_residual_config"] = paired_residual_config or {}
         hyper_params["relation_loss_config"] = relation_loss_config or {}
         hyper_params["mil_loss_config"] = mil_loss_config or {}
+    if model_type in [
+        "WhiStressPhnLocusCoupled",
+        "WhiStressPhnLocusCoupledRealization",
+    ]:
+        hyper_params["locus_coupling_config"] = locus_coupling_config or {}
 
     is_pos_model = model_type == "WhiStressPos"
-    is_paired_model = model_type == "WhiStressPhnPairedResidual"
     train_from_scratch = initialization_config.get("train_from_scratch", True)
     parent_checkpoint_dir = initialization_config.get("checkpoint_dir")
     freeze_pretrained_heads = initialization_config.get(
@@ -159,6 +166,24 @@ if __name__ == "__main__":
                     paired_residual_config=paired_residual_config,
                     relation_loss_config=relation_loss_config,
                     mil_loss_config=mil_loss_config).to(device)
+    elif model_type == "WhiStressPhnLocusCoupled":
+        print("Train WhiStressPhnLocusCoupled")
+        model = WhiStressPhnLocusCoupled(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    locus_coupling_config=locus_coupling_config).to(device)
+    elif model_type == "WhiStressPhnLocusCoupledRealization":
+        print("Train WhiStressPhnLocusCoupledRealization")
+        model = WhiStressPhnLocusCoupledRealization(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    locus_coupling_config=locus_coupling_config).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Train WhiStressPhnIa")
         model = WhiStressPhnIa(config=config, 
@@ -174,6 +199,9 @@ if __name__ == "__main__":
         "attention_mask",
         "labels_head",
     ]
+    requires_word_alignment = getattr(
+        model, "requires_word_alignment", False
+    )
 
     if args.resume:
         if not args.pretrained_ckpt_dir:
@@ -274,7 +302,7 @@ if __name__ == "__main__":
                 "token_pos_ids": token_pos_ids,
                 "word_ids": word_ids,
             }
-            if is_paired_model:
+            if requires_word_alignment:
                 model_inputs.update({
                     "phone_word_ids": phone_word_ids,
                     "phone_vowel_mask": phone_vowel_mask,
@@ -352,7 +380,7 @@ if __name__ == "__main__":
                     "token_pos_ids": token_pos_ids,
                     "word_ids": word_ids,
                 }
-                if is_paired_model:
+                if requires_word_alignment:
                     model_inputs.update({
                         "phone_word_ids": phone_word_ids,
                         "phone_vowel_mask": phone_vowel_mask,

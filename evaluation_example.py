@@ -224,10 +224,10 @@ if __name__ == "__main__":
         device=device,
     )
 
-    # Paired SSD/WSD coupling requires transcript-derived phone/word structure.
-    # Do not silently report an uncoupled generate_dual() result as paired-model
+    # Word-aligned SSD/WSD coupling requires transcript-derived structure.
+    # Do not report an uncoupled generate_dual() result as coupled-model
     # no-transcription performance.
-    if model.__class__.__name__ == "WhiStressPhnPairedResidual":
+    if getattr(model, "requires_word_alignment", False):
         metrics_wot = None
         error_cases_wot = []
         coverage_wot = None
