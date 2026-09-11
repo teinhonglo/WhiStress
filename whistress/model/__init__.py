@@ -4,6 +4,7 @@ from .model import (
     WhiStressPhn,
     WhiStressPhnPairedResidual,
     WhiStressPhnLocusCoupled,
+    WhiStressPhnRelativeLocusCoupled,
     WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
