@@ -1,0 +1,33 @@
+[
+  {
+    "epochs": 20,
+    "batch_size": 16,
+    "init_lr": 0.0001,
+    "patience": -1,
+    "accumulate_gradient_steps": 1
+  },
+  {
+    "whisper_tag": "openai/whisper-small.en",
+    "layer_for_head": 9,
+    "model_type": "WhiStressPhnRelativeLocusCoupled",
+    "loss_lambdas": {
+      "lambda_ssd": 1.0,
+      "lambda_wsd": 1.0,
+      "lambda_wsl": -1
+    },
+    "locus_coupling_config": {
+      "wsd_to_ssd": true,
+      "ssd_to_wsd": true,
+      "primary_temperature": 1.0,
+      "locus_epsilon": 1e-6,
+      "wsd_to_ssd_scale_init": 0.0,
+      "ssd_to_wsd_scale_init": 0.0,
+      "relative_word_scale_init": 0.0
+    },
+    "initialization_config": {
+      "train_from_scratch": true,
+      "checkpoint_dir": null,
+      "freeze_pretrained_heads": false
+    }
+  }
+]

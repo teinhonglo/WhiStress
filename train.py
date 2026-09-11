@@ -23,6 +23,7 @@ from whistress.model.model import (
     WhiStressPhn,
     WhiStressPhnPairedResidual,
     WhiStressPhnLocusCoupled,
+    WhiStressPhnRelativeLocusCoupled,
     WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
@@ -103,6 +104,7 @@ if __name__ == "__main__":
         hyper_params["mil_loss_config"] = mil_loss_config or {}
     if model_type in [
         "WhiStressPhnLocusCoupled",
+        "WhiStressPhnRelativeLocusCoupled",
         "WhiStressPhnLocusCoupledRealization",
     ]:
         hyper_params["locus_coupling_config"] = locus_coupling_config or {}
@@ -178,6 +180,15 @@ if __name__ == "__main__":
     elif model_type == "WhiStressPhnLocusCoupledRealization":
         print("Train WhiStressPhnLocusCoupledRealization")
         model = WhiStressPhnLocusCoupledRealization(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    locus_coupling_config=locus_coupling_config).to(device)
+    elif model_type == "WhiStressPhnRelativeLocusCoupled":
+        print("Train WhiStressPhnRelativeLocusCoupled")
+        model = WhiStressPhnRelativeLocusCoupled(
                     config=config,
                     layer_for_head=layer_for_head,
                     whisper_backbone_name=whisper_tag,

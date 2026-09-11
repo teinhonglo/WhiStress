@@ -1437,6 +1437,11 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
 
         return ssd_context_for_phones
 
+    def _refine_ssd_hidden_states(self, ssd_hidden_states, word_ids):
+        """Extension hook applied before SSD classification and SSD-to-WSD."""
+        del word_ids
+        return ssd_hidden_states
+
     def forward(
         self,
         input_features,
@@ -1497,6 +1502,10 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=ssd_cross_attention_bias,
         )[0].to(device)
+        ssd_hidden_states = self._refine_ssd_hidden_states(
+            ssd_hidden_states=ssd_hidden_states,
+            word_ids=word_ids,
+        )
         head_logits = self.classifier(ssd_hidden_states)
 
         phone_hidden_states = phone_base
@@ -1577,6 +1586,130 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
 
     def __str__(self):
         return "WhiStressPhnLocusCoupled"
+
+
+class WhiStressPhnRelativeLocusCoupled(WhiStressPhnLocusCoupled):
+    """Locus coupling with explicit current-versus-other word comparison."""
+
+    def __init__(
+        self,
+        config: WhisperConfig,
+        layer_for_head: Optional[int] = None,
+        whisper_backbone_name="openai/whisper-small.en",
+        class_weights=[1.0, 2.33],
+        num_phones=39,
+        loss_lambdas=None,
+        locus_coupling_config=None,
+    ):
+        super().__init__(
+            config=config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_backbone_name,
+            class_weights=class_weights,
+            num_phones=num_phones,
+            loss_lambdas=loss_lambdas,
+            locus_coupling_config=locus_coupling_config,
+        )
+
+        locus_coupling_config = locus_coupling_config or {}
+        self.relative_word_scale = nn.Parameter(
+            torch.tensor(
+                float(
+                    locus_coupling_config.get(
+                        "relative_word_scale_init", 0.0
+                    )
+                )
+            )
+        )
+
+        # Initialize the new comparison path without changing the RNG sequence
+        # used by the subsequent DataLoader shuffle.
+        cpu_rng_state = torch.get_rng_state()
+        self.relative_word_norm = nn.LayerNorm(self.config.d_model)
+        self.relative_word_attention = nn.MultiheadAttention(
+            embed_dim=self.config.d_model,
+            num_heads=self.config.decoder_attention_heads,
+            dropout=self.config.attention_dropout,
+            batch_first=True,
+        )
+        self.relative_feature_norm = nn.LayerNorm(2 * self.config.d_model)
+        self.relative_word_proj = nn.Linear(
+            2 * self.config.d_model,
+            self.config.d_model,
+            bias=False,
+        )
+        torch.set_rng_state(cpu_rng_state)
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+        for module in [
+            self.relative_word_norm,
+            self.relative_word_attention,
+            self.relative_feature_norm,
+            self.relative_word_proj,
+        ]:
+            for param in module.parameters():
+                param.requires_grad = True
+            module.train(mode)
+        self.relative_word_scale.requires_grad = True
+        return self
+
+    def _refine_ssd_hidden_states(self, ssd_hidden_states, word_ids):
+        """Add word-relative context while keeping independent SSD decisions."""
+        relative_updates = torch.zeros_like(ssd_hidden_states)
+
+        for b in range(ssd_hidden_states.size(0)):
+            valid_word_ids = torch.unique(word_ids[b][word_ids[b] >= 0])
+            if valid_word_ids.numel() <= 1:
+                continue
+
+            token_masks = [word_ids[b] == wid for wid in valid_word_ids]
+            word_representations = torch.stack(
+                [
+                    ssd_hidden_states[b][token_mask].mean(dim=0)
+                    for token_mask in token_masks
+                ],
+                dim=0,
+            )
+            normalized_words = self.relative_word_norm(word_representations)
+
+            # Excluding the diagonal makes each query word compare only with
+            # other words. It does not impose a one-stressed-word constraint.
+            exclude_self_mask = torch.eye(
+                valid_word_ids.numel(),
+                dtype=torch.bool,
+                device=ssd_hidden_states.device,
+            )
+            other_word_context, _ = self.relative_word_attention(
+                normalized_words.unsqueeze(0),
+                normalized_words.unsqueeze(0),
+                normalized_words.unsqueeze(0),
+                attn_mask=exclude_self_mask,
+                need_weights=False,
+            )
+            other_word_context = other_word_context.squeeze(0)
+
+            relative_features = torch.cat(
+                [
+                    normalized_words - other_word_context,
+                    normalized_words * other_word_context,
+                ],
+                dim=-1,
+            )
+            word_updates = self.relative_word_proj(
+                self.relative_feature_norm(relative_features)
+            )
+
+            for token_mask, word_update in zip(token_masks, word_updates):
+                relative_updates[b][token_mask] = word_update
+
+        return (
+            ssd_hidden_states
+            + self.relative_word_scale * relative_updates
+        )
+
+    def __str__(self):
+        return "WhiStressPhnRelativeLocusCoupled"
 
 
 class WhiStressPhnLocusCoupledRealization(WhiStressPhnLocusCoupled):
