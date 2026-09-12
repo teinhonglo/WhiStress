@@ -1442,6 +1442,15 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         del word_ids
         return ssd_hidden_states
 
+    def _apply_ssd_side_information(
+        self,
+        ssd_hidden_states,
+        token_pos_ids,
+    ):
+        """Extension hook for token-aligned SSD side information."""
+        del token_pos_ids
+        return ssd_hidden_states
+
     def forward(
         self,
         input_features,
@@ -1456,7 +1465,6 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         phone_word_ids=None,
         phone_vowel_mask=None,
     ):
-        del token_pos_ids
         if phone_ids is None:
             raise ValueError(f"phone_ids is required for {self.__class__.__name__}")
         if word_ids is None or phone_word_ids is None or phone_vowel_mask is None:
@@ -1505,6 +1513,10 @@ class WhiStressPhnLocusCoupled(WhiStressPhn):
         ssd_hidden_states = self._refine_ssd_hidden_states(
             ssd_hidden_states=ssd_hidden_states,
             word_ids=word_ids,
+        )
+        ssd_hidden_states = self._apply_ssd_side_information(
+            ssd_hidden_states=ssd_hidden_states,
+            token_pos_ids=token_pos_ids,
         )
         head_logits = self.classifier(ssd_hidden_states)
 
@@ -1710,6 +1722,71 @@ class WhiStressPhnRelativeLocusCoupled(WhiStressPhnLocusCoupled):
 
     def __str__(self):
         return "WhiStressPhnRelativeLocusCoupled"
+
+
+class WhiStressPhnStaticPosRelativeLocusCoupled(
+    WhiStressPhnRelativeLocusCoupled
+):
+    """Relative locus coupling with a static POS residual for SSD."""
+
+    def __init__(
+        self,
+        config: WhisperConfig,
+        layer_for_head: Optional[int] = None,
+        whisper_backbone_name="openai/whisper-small.en",
+        class_weights=[1.0, 2.33],
+        num_phones=39,
+        loss_lambdas=None,
+        locus_coupling_config=None,
+        pos_bias_config=None,
+    ):
+        if pos_bias_config is None:
+            raise ValueError(
+                "pos_bias_config is required for "
+                "WhiStressPhnStaticPosRelativeLocusCoupled"
+            )
+        if pos_bias_config.get("mode") != "static":
+            raise ValueError(
+                "WhiStressPhnStaticPosRelativeLocusCoupled requires "
+                "pos_bias_config.mode='static'"
+            )
+
+        super().__init__(
+            config=config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_backbone_name,
+            class_weights=class_weights,
+            num_phones=num_phones,
+            loss_lambdas=loss_lambdas,
+            locus_coupling_config=locus_coupling_config,
+        )
+
+        # Keep the DataLoader shuffle sequence aligned with RLocus while
+        # retaining the standard random initialization for POS parameters.
+        cpu_rng_state = torch.get_rng_state()
+        self.pos_bias = PosBias(
+            self.config.d_model,
+            pos_bias_config,
+        )
+        torch.set_rng_state(cpu_rng_state)
+
+    def train(self, mode: Optional[bool] = True):
+        super().train(mode)
+        for param in self.pos_bias.parameters():
+            param.requires_grad = True
+        self.pos_bias.train(mode)
+        return self
+
+    def _apply_ssd_side_information(
+        self,
+        ssd_hidden_states,
+        token_pos_ids,
+    ):
+        """Add static POS after relative-word refinement for both tasks."""
+        return self.pos_bias(ssd_hidden_states, token_pos_ids)
+
+    def __str__(self):
+        return "WhiStressPhnStaticPosRelativeLocusCoupled"
 
 
 class WhiStressPhnLocusCoupledRealization(WhiStressPhnLocusCoupled):

@@ -11,6 +11,7 @@ from ..model import (
     WhiStressPhnPairedResidual,
     WhiStressPhnLocusCoupled,
     WhiStressPhnRelativeLocusCoupled,
+    WhiStressPhnStaticPosRelativeLocusCoupled,
     WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
@@ -108,6 +109,18 @@ def get_loaded_model(device="cuda", metadata=None):
                 "locus_coupling_config", {}
             ),
         ).to(device)
+    elif model_type == "WhiStressPhnStaticPosRelativeLocusCoupled":
+        print("Inference WhiStressPhnStaticPosRelativeLocusCoupled")
+        whistress_model = WhiStressPhnStaticPosRelativeLocusCoupled(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            num_phones=39,
+            locus_coupling_config=metadata.get(
+                "locus_coupling_config", {}
+            ),
+            pos_bias_config=metadata["pos_bias_config"],
+        ).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Inference WhiStressPhnIa")
         whistress_model = WhiStressPhnIa(
@@ -132,6 +145,7 @@ def get_loaded_model(device="cuda", metadata=None):
             "WhiStressPos", "WhiStressPhn", "WhiStressPhnPairedResidual",
             "WhiStressPhnLocusCoupled",
             "WhiStressPhnRelativeLocusCoupled",
+            "WhiStressPhnStaticPosRelativeLocusCoupled",
             "WhiStressPhnLocusCoupledRealization", "WhiStressPhnIa"
         ]:
             print("Load All Weights")
