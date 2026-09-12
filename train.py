@@ -24,6 +24,7 @@ from whistress.model.model import (
     WhiStressPhnPairedResidual,
     WhiStressPhnLocusCoupled,
     WhiStressPhnRelativeLocusCoupled,
+    WhiStressPhnStaticPosRelativeLocusCoupled,
     WhiStressPhnLocusCoupledRealization,
     WhiStressPhnIa,
 )
@@ -95,8 +96,12 @@ if __name__ == "__main__":
         "layer_for_head": layer_for_head,
         "whisper_tag": whisper_tag
     }
-    if model_type == "WhiStressPos":
+    if model_type in [
+        "WhiStressPos",
+        "WhiStressPhnStaticPosRelativeLocusCoupled",
+    ]:
         hyper_params["pos_bias_config"] = pos_bias_config
+    if model_type == "WhiStressPos":
         hyper_params["initialization_config"] = initialization_config
     if model_type == "WhiStressPhnPairedResidual":
         hyper_params["paired_residual_config"] = paired_residual_config or {}
@@ -105,6 +110,7 @@ if __name__ == "__main__":
     if model_type in [
         "WhiStressPhnLocusCoupled",
         "WhiStressPhnRelativeLocusCoupled",
+        "WhiStressPhnStaticPosRelativeLocusCoupled",
         "WhiStressPhnLocusCoupledRealization",
     ]:
         hyper_params["locus_coupling_config"] = locus_coupling_config or {}
@@ -195,6 +201,16 @@ if __name__ == "__main__":
                     num_phones=39,
                     loss_lambdas=loss_lambdas,
                     locus_coupling_config=locus_coupling_config).to(device)
+    elif model_type == "WhiStressPhnStaticPosRelativeLocusCoupled":
+        print("Train WhiStressPhnStaticPosRelativeLocusCoupled")
+        model = WhiStressPhnStaticPosRelativeLocusCoupled(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    num_phones=39,
+                    loss_lambdas=loss_lambdas,
+                    locus_coupling_config=locus_coupling_config,
+                    pos_bias_config=pos_bias_config).to(device)
     elif model_type == "WhiStressPhnIa":
         print("Train WhiStressPhnIa")
         model = WhiStressPhnIa(config=config, 
