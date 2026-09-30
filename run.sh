@@ -7,8 +7,6 @@ stage=0
 stop_stage=1000
 train_conf=conf/baseline.json
 gpuid=0
-seed=""
-exp_dir=""
 data_root=data
 test_corpora="tinystress stresstest stresspresso expresso emphassess"
 force_download=false
@@ -16,12 +14,7 @@ force_download=false
 . ./local/parse_options.sh
 . ./path.sh
 
-if [ -z "$exp_dir" ]; then
-    exp_dir="exp/$(basename -s .json "$train_conf")"
-    if [ -n "$seed" ]; then
-        exp_dir="${exp_dir}_seed${seed}"
-    fi
-fi
+exp_dir="exp/$(basename -s .json "$train_conf")"
 
 if [ "$stage" -le 0 ] && [ "$stop_stage" -ge 0 ]; then
     download_args=(
@@ -37,12 +30,10 @@ fi
 if [ "$stage" -le 1 ] && [ "$stop_stage" -ge 1 ]; then
 
     if [ ! -f "$exp_dir/.done" ]; then
-        train_options=(--train_conf "$train_conf" --exp_dir "$exp_dir")
-        if [ -n "$seed" ]; then
-            train_options+=(--seed "$seed")
-        fi
         CUDA_VISIBLE_DEVICES="$gpuid" \
-            python train.py "${train_options[@]}"
+            python train.py \
+                --train_conf "$train_conf" \
+                --exp_dir "$exp_dir"
     fi
     touch "$exp_dir/.done"
 fi

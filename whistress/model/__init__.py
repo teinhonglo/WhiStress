@@ -1,6 +1,5 @@
 from .model import (
     WhiStress,
-    ProWhiStress,
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,

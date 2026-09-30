@@ -3,7 +3,6 @@ import os
 import argparse
 import json
 import random
-import math
 import numpy as np
 from dataclasses import dataclass, field
 import wandb
@@ -11,7 +10,7 @@ import wandb
 import torch
 from torch.utils.data import DataLoader
 from datasets import load_dataset
-from transformers import WhisperProcessor, WhisperTokenizerFast, WhisperConfig, AdamW, get_linear_schedule_with_warmup
+from transformers import WhisperProcessor, WhisperTokenizerFast, WhisperConfig, AdamW
 from tqdm import tqdm
 import evaluate
 import torch.nn.functional as F
@@ -20,7 +19,6 @@ from torch.nn.utils.rnn import pad_sequence
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
 from whistress.model.model import (
     WhiStress,
-    ProWhiStress,
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
@@ -34,43 +32,11 @@ from whistress.model.model import (
 from utils import StressDataset, MyCollate, load_from_json, save_to_json
 from metrics import compute_prf_metrics
 
-def prepare_model_inputs(model, batch, device):
-    audio_array = [x["array"] for x in batch["audio_input"]]
-    inputs = {
-        "input_features": model.processor.feature_extractor(
-            audio_array, sampling_rate=16000, return_tensors="pt"
-        )["input_features"].to(device),
-    }
-    for key in (
-        "decoder_input_ids", "labels_head", "phone_ids", "phone_labels_head",
-        "token_pos_ids", "word_ids",
-    ):
-        inputs[key] = batch[key].to(device)
-    if getattr(model, "requires_word_alignment", False):
-        for key in ("phone_word_ids", "phone_vowel_mask"):
-            inputs[key] = batch[key].to(device)
-    return inputs
-
-
-def evaluate_validation(model, val_loader, device):
-    model.eval()
-    predictions, references = [], []
-    with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Validation"):
-            inputs = prepare_model_inputs(model, batch, device)
-            output = model(**inputs)
-            labels = inputs["labels_head"]
-            valid = labels.ne(-100)
-            predictions.extend(output.preds[valid].tolist())
-            references.extend(labels[valid].tolist())
-    return compute_prf_metrics(predictions, references)
-
-
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_conf", type=str, default="conf/baseline.json")
     parser.add_argument("--pretrained_ckpt_dir", type=str)
-    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--seed', type=int, default=66)
     parser.add_argument("--exp_dir", type=str, default="./exp/baseline")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -87,16 +53,6 @@ def main():
     patience = train_args["patience"] if train_args["patience"] != -1 else epochs
     batch_size = train_args["batch_size"]
     accumulate_gradient_steps = train_args["accumulate_gradient_steps"]
-    seed = args.seed if args.seed is not None else train_args.get("seed", 66)
-    split_seed = train_args.get("split_seed", seed)
-    validation_ratio = train_args.get("validation_ratio", 0.1)
-    eval_steps = train_args.get("eval_steps", 0)
-    save_steps = train_args.get("save_steps", 0)
-    if accumulate_gradient_steps < 1 or eval_steps < 0 or save_steps < 0:
-        raise ValueError("Invalid accumulation, evaluation or checkpoint interval")
-    if not 0 < validation_ratio < 1:
-        raise ValueError("validation_ratio must be in (0, 1)")
-    train_args["seed"] = seed
 
     model_type = model_args["model_type"]
     whisper_tag = model_args["whisper_tag"]
@@ -108,7 +64,6 @@ def main():
     relation_loss_config = model_args.get("relation_loss_config", None)
     mil_loss_config = model_args.get("mil_loss_config", None)
     initialization_config = model_args.get("initialization_config", {})
-    prowhistress_config = model_args.get("prowhistress_config", None)
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
@@ -126,6 +81,7 @@ def main():
     model_conf_path = os.path.join(args.exp_dir, 'model_conf.json')
     save_to_json(model_args, model_conf_path)
 
+    seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -140,10 +96,6 @@ def main():
         "layer_for_head": layer_for_head,
         "whisper_tag": whisper_tag
     }
-    hyper_params.update({
-        "seed": seed, "split_seed": split_seed,
-        "validation_ratio": validation_ratio,
-    })
     if model_type in [
         "WhiStressPos",
         "WhiStressPhnStaticPosRelativeLocusCoupled",
@@ -196,15 +148,6 @@ def main():
                     layer_for_head=layer_for_head, 
                     whisper_backbone_name=whisper_tag,
                     loss_lambdas=loss_lambdas).to(device)
-    elif model_type == "ProWhiStress":
-        model = ProWhiStress(
-            config=config,
-            layer_for_head=layer_for_head,
-            whisper_backbone_name=whisper_tag,
-            loss_lambdas=loss_lambdas,
-            prowhistress_config=prowhistress_config,
-        ).to(device)
-        hyper_params["prowhistress_config"] = model.prowhistress_config
     elif model_type == "WhiStressPos":
         print("Train WhiStressPos")
         model = WhiStressPos(config=config,
@@ -283,6 +226,9 @@ def main():
         "attention_mask",
         "labels_head",
     ]
+    requires_word_alignment = getattr(
+        model, "requires_word_alignment", False
+    )
 
     if args.resume:
         if not args.pretrained_ckpt_dir:
@@ -323,48 +269,21 @@ def main():
 
     # Enforce the configured freeze policy before selecting optimizer parameters.
     model.train()
-    if train_args.get("optimizer") == "adamw_torch":
-        # Match Trainer's AdamW: no decay on bias or LayerNorm parameters.
-        no_decay_ids = {
-            id(param)
-            for module in model.modules() if isinstance(module, torch.nn.LayerNorm)
-            for param in module.parameters()
-        }
-        decay, no_decay = [], []
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                # Includes MultiheadAttention.in_proj_bias, matching Trainer.
-                target = no_decay if "bias" in name or id(param) in no_decay_ids else decay
-                target.append(param)
-        optimizer = torch.optim.AdamW([
-            {"params": decay, "weight_decay": train_args.get("weight_decay", 0.01)},
-            {"params": no_decay, "weight_decay": 0.0},
-        ], lr=init_lr, betas=(0.9, 0.999), eps=1e-8)
-    else:
-        optimizer = AdamW(
-            [param for param in model.parameters() if param.requires_grad], lr=init_lr
-        )
+    optimizer = AdamW(
+        [param for param in model.parameters() if param.requires_grad], lr=init_lr
+    )
 
     dataset = load_dataset("slprl/TinyStress-15K")
-    raw_train_dataset = dataset["train"].train_test_split(
-        test_size=validation_ratio, seed=split_seed,
-    )
+    raw_train_dataset = dataset["train"].train_test_split(test_size=0.1, seed=seed)
     dataset["train"] = raw_train_dataset["train"]
     dataset["val"] = raw_train_dataset["test"]
     
-    train_processed_dir, val_processed_dir = "data/train", "data/valid"
-    if model_type == "ProWhiStress":
-        # Fixed split seed 42 across model seeds 42--46, and no reuse of the
-        # existing 10%-validation cache for the author's 2%-validation split.
-        cache_root = Path("data/processed/tinystress")
-        train_processed_dir = str(cache_root / f"train_{dataset['train']._fingerprint}")
-        val_processed_dir = str(cache_root / f"valid_{dataset['val']._fingerprint}")
     data_collate = MyCollate(processor=model.processor)
     train_loader = DataLoader(
         StressDataset(
             hf_dataset_or_path=dataset["train"],
             model=model,
-            processed_dir=train_processed_dir,
+            processed_dir="data/train",
         ),
         batch_size=batch_size,
         shuffle=True,
@@ -374,58 +293,14 @@ def main():
         StressDataset(
             hf_dataset_or_path=dataset["val"],
             model=model,
-            processed_dir=val_processed_dir,
+            processed_dir="data/valid",
         ),
-        batch_size=train_args.get("eval_batch_size", batch_size),
+        batch_size=batch_size,
         collate_fn=data_collate,
     )
 
-    if not len(train_loader) or not len(val_loader):
-        raise ValueError("Training and validation loaders must both be non-empty")
-    scheduler = None
-    if train_args.get("lr_scheduler") == "linear":
-        total_steps = math.ceil(len(train_loader) / accumulate_gradient_steps) * epochs
-        warmup_steps = math.ceil(train_args.get("warmup_ratio", 0.0) * total_steps)
-        scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
-
     best_f1, best_epoch, metrics_log = -1.0, -1, []
     patience_counter = 0
-    global_step, last_eval_step = 0, -1
-
-    def validate(epoch):
-        nonlocal best_f1, best_epoch, patience_counter, last_eval_step
-        prf = evaluate_validation(model, val_loader, device)
-        last_eval_step = global_step
-        print(f"[Epoch {epoch:.3f}, Step {global_step}] Validation: {prf}")
-        metrics_log.append({"epoch": epoch, "step": global_step, **prf})
-        if prf["f1"] > best_f1:
-            best_f1, best_epoch = prf["f1"], epoch
-            hyper_params["global_step"] = global_step
-            torch.save(model.state_dict(), best_ckpt_dir / "model.pt")
-            save_model_parts(model, save_dir=best_ckpt_dir, metadata=hyper_params)
-            with open(exp_dir / "best.log", "w") as file:
-                json.dump(metrics_log[-1], file, indent=4)
-            patience_counter = 0
-        else:
-            patience_counter += 1
-        model.train()
-        return train_args["patience"] != -1 and patience_counter >= patience
-
-    def save_step_checkpoint():
-        torch.save(model.state_dict(), ckpt_dir / f"step{global_step}.pt")
-        limit = train_args.get("save_total_limit")
-        if limit is not None:
-            if limit < 1:
-                raise ValueError("save_total_limit must be positive")
-            checkpoints = sorted(
-                ckpt_dir.glob("step[0-9]*.pt"),
-                key=lambda path: int(path.stem[4:]),
-            )
-            for checkpoint in checkpoints[:-limit]:
-                checkpoint.unlink()
-
-    optimizer.zero_grad()
-    should_stop = False
 
     for epoch in range(epochs):
         model.train()
@@ -433,8 +308,33 @@ def main():
         total_loss_rank, total_loss_mil = 0.0, 0.0
         train_all_preds, train_all_labels = [], []
         for step, batch in enumerate(tqdm(train_loader, desc=f"[Epoch {epoch+1}] Training")):
-            model_inputs = prepare_model_inputs(model, batch, device)
-            labels = model_inputs["labels_head"]
+            audio_array = [x["array"] for x in batch["audio_input"]]
+
+            input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
+            decoder_input_ids = batch["decoder_input_ids"].to(device)
+            labels = batch["labels_head"].to(device)
+            phone_ids = batch["phone_ids"].to(device)
+            phone_labels_head = batch["phone_labels_head"].to(device)
+            token_pos_ids = batch["token_pos_ids"].to(device)
+            word_ids = batch["word_ids"].to(device)
+            phone_word_ids = batch["phone_word_ids"].to(device)
+            phone_vowel_mask = batch["phone_vowel_mask"].to(device)
+
+            model_inputs = {
+                "input_features": input_features,
+                "decoder_input_ids": decoder_input_ids,
+                "labels_head": labels,
+                "phone_ids": phone_ids,
+                "phone_labels_head": phone_labels_head,
+                "token_pos_ids": token_pos_ids,
+                "word_ids": word_ids,
+            }
+            if requires_word_alignment:
+                model_inputs.update({
+                    "phone_word_ids": phone_word_ids,
+                    "phone_vowel_mask": phone_vowel_mask,
+                })
+
             output = model(**model_inputs)
             loss_main = output.loss_main
             loss_wsd = output.loss_wsd
@@ -443,29 +343,12 @@ def main():
             loss_mil = output.loss_mil
             loss = output.loss
             
-            # Normalize and flush the final partial accumulation group too.
-            group_size = min(
-                accumulate_gradient_steps,
-                len(train_loader) - (step // accumulate_gradient_steps) * accumulate_gradient_steps,
-            )
-            loss = loss / group_size
+            loss = loss / accumulate_gradient_steps
             loss.backward()
             
-            if (step + 1) % accumulate_gradient_steps == 0 or step + 1 == len(train_loader):
-                if train_args.get("max_grad_norm") is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        [p for p in model.parameters() if p.requires_grad],
-                        train_args["max_grad_norm"],
-                    )
+            if (step + 1) % accumulate_gradient_steps == 0:
                 optimizer.step()
-                if scheduler is not None:
-                    scheduler.step()
                 optimizer.zero_grad()
-                global_step += 1
-                if eval_steps and global_step % eval_steps == 0:
-                    should_stop = validate(epoch + (step + 1) / len(train_loader))
-                if save_steps and global_step % save_steps == 0:
-                    save_step_checkpoint()
             
             # collect predictions for PRF
             preds = output.preds.view(-1).tolist()
@@ -475,7 +358,7 @@ def main():
                     train_all_preds.append(p)
                     train_all_labels.append(l)
             
-            total_loss += output.loss.item()
+            total_loss += loss.item()
             total_loss_main += loss_main.item()
             if loss_wsd is not None:
                 total_loss_wsd += loss_wsd.item()
@@ -485,8 +368,6 @@ def main():
                 total_loss_rank += loss_rank.item()
             if loss_mil is not None:
                 total_loss_mil += loss_mil.item()
-            if should_stop:
-                break
 
         train_prf = compute_prf_metrics(train_all_preds, train_all_labels)
         print(
@@ -500,24 +381,80 @@ def main():
             f"Recall: {train_prf['recall']:.4f}, F1: {train_prf['f1']:.4f}"
         )
 
-        # Legacy configs validate/save once per epoch. Cover a short step-based
-        # run's final step as well if it is not a multiple of eval_steps.
-        if not eval_steps or (epoch == epochs - 1 and last_eval_step != global_step):
-            should_stop = validate(epoch + 1) or should_stop
-        if not save_steps:
-            torch.save(model.state_dict(), ckpt_dir / f"epoch{epoch+1}.pt")
-        if should_stop:
-            print(f"Early stopping at epoch {epoch+1}, step {global_step}")
-            break
+        # === Validation ===
+        model.eval()
+        all_preds, all_labels = [], []
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc=f"[Epoch {epoch+1}] Validation"):
+                audio_array = [x["array"] for x in batch["audio_input"]]
 
-    if save_steps and global_step % save_steps:
-        save_step_checkpoint()
+                input_features = model.processor.feature_extractor(audio_array, sampling_rate=16000, return_tensors="pt")["input_features"].to(device)
+                decoder_input_ids = batch["decoder_input_ids"].to(device)
+                labels = batch["labels_head"].to(device)
+                phone_ids = batch["phone_ids"].to(device)
+                phone_labels_head = batch["phone_labels_head"].to(device)
+                token_pos_ids = batch["token_pos_ids"].to(device)
+                word_ids = batch["word_ids"].to(device)
+                phone_word_ids = batch["phone_word_ids"].to(device)
+                phone_vowel_mask = batch["phone_vowel_mask"].to(device)
+
+                model_inputs = {
+                    "input_features": input_features,
+                    "decoder_input_ids": decoder_input_ids,
+                    "labels_head": labels,
+                    "phone_ids": phone_ids,
+                    "phone_labels_head": phone_labels_head,
+                    "token_pos_ids": token_pos_ids,
+                    "word_ids": word_ids,
+                }
+                if requires_word_alignment:
+                    model_inputs.update({
+                        "phone_word_ids": phone_word_ids,
+                        "phone_vowel_mask": phone_vowel_mask,
+                    })
+
+                output = model(**model_inputs)
+
+                preds = output.preds.view(-1).tolist()
+                labels_flat = labels.view(-1).tolist()
+                for p, l in zip(preds, labels_flat):
+                    if l != -100:
+                        all_preds.append(p)
+                        all_labels.append(l)
+
+        prf = compute_prf_metrics(all_preds, all_labels)
+        print(f"[Epoch {epoch+1}] Precision: {prf['precision']:.4f}, Recall: {prf['recall']:.4f}, F1: {prf['f1']:.4f}")
+        metrics_log.append({"epoch": epoch+1, **prf})
+
+        torch.save(model.state_dict(), ckpt_dir / f"epoch{epoch+1}.pt")
+        if prf["f1"] > best_f1:
+            best_f1, best_epoch = prf["f1"], epoch + 1
+            torch.save(model.state_dict(), best_ckpt_dir / "model.pt")
+            save_model_parts(model, save_dir=best_ckpt_dir, metadata=hyper_params)
+            print(f"✅ Best model updated at epoch {best_epoch} with F1 = {best_f1:.4f}")
+
+            with open(exp_dir / "best.log", "w") as f:
+                json.dump(metrics_log[-1], f, indent=4)
+            
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"⏹️ Early stopping triggered at epoch {epoch+1}")
+                break
+        
+        #wandb.log({
+        #    "epoch": epoch + 1,
+        #    "train/loss": total_loss / len(train_loader),
+        #    "train/precision": train_prf["precision"],
+        #    "train/recall": train_prf["recall"],
+        #    "train/f1": train_prf["f1"],
+        #    "val/precision": prf["precision"],
+        #    "val/recall": prf["recall"],
+        #    "val/f1": prf["f1"]
+        #})
 
     with open(exp_dir / "metrics.json", "w") as f:
         json.dump(metrics_log, f, indent=4)
 
     print(f"\n🏆 Final best model at epoch {best_epoch} with F1 = {best_f1:.4f}")
-
-
-if __name__ == "__main__":
-    main()

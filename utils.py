@@ -163,7 +163,7 @@ def preprocess(example, model, phone_dict):
         transcription,
         return_tensors="pt",
         truncation=True,
-        max_length=getattr(model, "max_text_length", 50)
+        max_length=50
     )
 
     input_ids = tokenized["input_ids"][0]
@@ -239,12 +239,6 @@ def preprocess(example, model, phone_dict):
 class StressDataset(torch.utils.data.Dataset):
     def __init__(self, hf_dataset_or_path, model, processed_dir="data/processed", num_proc=1):
         self.phone_dict = build_phone2id_no_stress()
-
-        # ProWhistress follows the author's full-transcript tokenization. Do
-        # not reuse a legacy cache truncated to 50 tokens, including in Stage 2/3.
-        text_limit = getattr(model, "max_text_length", 50)
-        if text_limit != 50:
-            processed_dir = f"{processed_dir}_text{text_limit}"
 
         # 如果有快取就直接讀
         if os.path.exists(processed_dir):
