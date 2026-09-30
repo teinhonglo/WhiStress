@@ -564,7 +564,6 @@ class ProWhiStress(WhiStress):
             self.d_ctx, num_heads, batch_first=True,
         )
         self.fusion_gate = GatedResidualFusion(d_model, float(cfg["gate_bias_init"]))
-        self.max_text_length = backbone_config.max_target_positions
         self.whisper_model.requires_grad_(False)
 
     def _stress_logits(self, backbone_outputs):

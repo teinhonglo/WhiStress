@@ -280,7 +280,7 @@ def inference_from_audio_and_transcription(
         transcription,
         return_tensors="pt",
         truncation=True,
-        max_length=getattr(model, "max_text_length", 50),
+        max_length=50,
     )["input_ids"]
     model_inputs = {
         "input_features": input_features.to(device),

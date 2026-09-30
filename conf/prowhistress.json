@@ -1,10 +1,13 @@
 [
   {
     "epochs": 20,
-    "batch_size": 16,
-    "init_lr": 0.0001,
+    "batch_size": 32,
+    "init_lr": 0.0005,
     "patience": -1,
-    "accumulate_gradient_steps": 1
+    "accumulate_gradient_steps": 1,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.05,
+    "max_grad_norm": 1.0
   },
   {
     "whisper_tag": "openai/whisper-small.en",
