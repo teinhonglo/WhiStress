@@ -195,7 +195,9 @@ following the [official implementation](https://github.com/Guhujian/ProWhistress
 at commit `a41cd0e13bf39ebd50c46cdfecd49343d89708af`. It is an SSD model;
 the existing WSD, POS, and coupling variants remain separate model types.
 
-Start with the paper configuration:
+Start with the configuration below. It follows the author's architecture and
+optimizer settings while retaining this project's 20 epochs, 10% validation
+split, once-per-epoch validation, and default seed 66:
 
 ```bash
 ./run.sh --stage 0 --stop_stage 4 --gpuid 0 \
@@ -222,13 +224,13 @@ Start with the paper configuration:
 | Acoustic encoder internal/output dropout | 0.1 / 0.0 | Model code / README training command |
 | Positive CE weight | `0.7 / 0.3` | Model code; rounded to 2.33 in paper |
 | Explicit-output regularization | 0 | README training command |
-| Epochs / train batch / accumulation | 2 / 32 / 1 | Paper + README |
+| Epochs / train batch / accumulation | 20 / 32 / 1 | Project epochs / author's batch and accumulation |
 | Optimizer | Torch AdamW, betas (0.9, 0.999), epsilon 1e-8 | Author's Trainer defaults |
 | Learning rate / weight decay | 5e-4 / 0.01 | Author's training code |
 | Schedule / warmup | Linear decay / 5% | Author's training code and Trainer default |
-| Validation split | 2% of TinyStress training split; fixed split seed 42 | Author's data loader |
-| Validation / periodic checkpoint | Every 10 / 100 optimizer steps | Author's training code |
-| Model seed | 42 initially; paper uses 42-46 | Paper, Section 4.3 |
+| Validation split | 10% of TinyStress training split; seed follows the model seed | Original project protocol |
+| Validation / periodic checkpoint | Every epoch / 100 optimizer steps | Project validation / author's checkpoint cadence |
+| Model and split seed | 66 by default | Original project protocol |
 | Gradient clipping / precision | Max norm 1.0 / FP32 | Author's Trainer settings/defaults |
 | Audio-only generation length | 96 | Author's training code |
 
@@ -241,33 +243,29 @@ share the same stress head.
 
 Checkpoints preserve both streams in `best/model.pt` and the complete
 architecture in `best/metadata.json`. The highest validation token-level F1 is
-saved immediately; periodic checkpoints retain only the latest file. A final
-validation/checkpoint is also made when a short run ends between intervals.
+saved immediately after epoch validation; periodic checkpoints retain only the
+latest file. A final checkpoint is also made when a run ends between intervals.
 Stage 2 still reports token-level metrics, Stage 3 word-level metrics and
 coverage (with and without reference transcription), and Stage 4 the existing
 error-analysis PNGs. In particular, compare the author's teacher-forced
 word-level results against Stage 3 `metrics`, rather than `metrics_wot`.
 
-To repeat all five model seeds using the same data split:
-
-```bash
-for seed in 42 43 44 45 46; do
-  ./run.sh --stage 1 --stop_stage 4 --gpuid 0 \
-    --train_conf conf/prowhistress_paper.json --seed "$seed"
-done
-```
-
 `--seed` creates separate `exp/prowhistress_paper_seed<seed>` directories;
 without it, the default is `exp/prowhistress_paper`. `--exp_dir` can override
-this path explicitly. Split fingerprints and the text-length limit isolate
-the paper's preprocessing caches from legacy 10%-validation/50-token caches.
+this path explicitly. As in the original project, `--seed` controls both model
+initialization and the train/validation split. Split fingerprints and the
+text-length limit prevent reuse of caches for another split or token limit.
 
 `conf/prowhistress.json` uses the same dual-stream architecture with this
 project's original 20-epoch, batch-16, learning-rate-1e-4 training setup for
-project comparisons. Use `prowhistress_paper.json` first for paper reproduction.
+project comparisons. `prowhistress_paper.json` retains the author's remaining
+training settings with the project validation, epochs, and seed described above.
 
 Reproduction qualifications:
 
+- The training protocol intentionally uses the project's 20 epochs, 10%
+  validation split, epoch validation, and seed 66 rather than the author's
+  2 epochs, 2% validation, validation every 10 steps, and seeds 42-46.
 - The published English model references an uninitialized `source_layer_idx`
   and an undefined `output_dim`, and its training entrypoint has an indentation
   error. The additional decoder is initialized from the last Whisper decoder
