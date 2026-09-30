@@ -6,6 +6,7 @@ import pathlib
 from torch.nn import functional as F
 from ..model import (
     WhiStress,
+    ProWhiStress,
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
@@ -48,6 +49,13 @@ def get_loaded_model(device="cuda", metadata=None):
             config=whisper_config, 
             layer_for_head=layer_for_head, 
             whisper_backbone_name=whisper_model_name
+        ).to(device)
+    elif model_type == "ProWhiStress":
+        whistress_model = ProWhiStress(
+            config=whisper_config,
+            layer_for_head=layer_for_head,
+            whisper_backbone_name=whisper_model_name,
+            prowhistress_config=metadata["prowhistress_config"],
         ).to(device)
     elif model_type == "WhiStressPhn":
         print("Inference WhiStressPhn")
@@ -272,7 +280,7 @@ def inference_from_audio_and_transcription(
         transcription,
         return_tensors="pt",
         truncation=True,
-        max_length=50,
+        max_length=getattr(model, "max_text_length", 50),
     )["input_ids"]
     model_inputs = {
         "input_features": input_features.to(device),

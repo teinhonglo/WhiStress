@@ -18,6 +18,7 @@ def plot_fnr_fpr_by(df, feature, save_dir, bins=None, labels=None):
 
     # 計算 FNR/FPR
     grouped = df_copy.groupby(["bin", "type"], observed=False).size().unstack(fill_value=0)
+    grouped = grouped.reindex(columns=["TP", "TN", "FP", "FN"], fill_value=0)
     grouped["FNR"] = grouped["FN"] / (grouped["FN"] + grouped["TP"]).replace(0, np.nan)
     grouped["FPR"] = grouped["FP"] / (grouped["FP"] + grouped["TN"]).replace(0, np.nan)
 

@@ -1,0 +1,26 @@
+[
+  {
+    "epochs": 20,
+    "batch_size": 16,
+    "init_lr": 0.0001,
+    "patience": -1,
+    "accumulate_gradient_steps": 1
+  },
+  {
+    "whisper_tag": "openai/whisper-small.en",
+    "layer_for_head": 9,
+    "model_type": "ProWhiStress",
+    "loss_lambdas": null,
+    "prowhistress_config": {
+      "d_ctx": 256,
+      "stress_encoder_layers": 3,
+      "stress_encoder_input_layer": 9,
+      "decoder_input_layer": 12,
+      "encoder_dropout": 0.1,
+      "dropout": 0.0,
+      "gate_bias_init": -3.0,
+      "stress_reg_coeff": 0.0,
+      "additional_decoder_init_layer": -1
+    }
+  }
+]

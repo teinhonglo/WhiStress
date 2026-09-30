@@ -449,6 +449,223 @@ class WhiStress(PreTrainedModel):
         return "WhiStress"
 
 
+class StressEncoder(nn.Module):
+    """Task-trained acoustic branch from the ProWhistress implementation."""
+
+    def __init__(self, d_model, num_heads, num_layers=3, dropout=0.1):
+        super().__init__()
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=4 * d_model,
+            dropout=dropout,
+            activation="relu",
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+
+    def forward(self, hidden_states):
+        return self.encoder(hidden_states)
+
+
+class GatedResidualFusion(nn.Module):
+    """Per-token, per-feature gate; the published code uses a two-layer MLP."""
+
+    def __init__(self, d_model, bias_init=-3.0):
+        super().__init__()
+        self.gate_net = nn.Sequential(
+            nn.Linear(2 * d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+            nn.Sigmoid(),
+        )
+        nn.init.constant_(self.gate_net[-2].bias, bias_init)
+
+    def forward(self, main, aux):
+        gate = self.gate_net(torch.cat([main, aux], dim=-1))
+        return main + gate * aux
+
+
+class ProWhiStress(WhiStress):
+    """English ProWhistress dual stream (Gu et al., Interspeech 2026).
+
+    Layer numbers index Hugging Face hidden_states, including embedding output
+    at index 0. The explicit attention query is the original decoder state,
+    not the output of additional_decoder_block.
+    """
+
+    def __init__(self, *args, prowhistress_config=None, **kwargs):
+        kwargs.setdefault("class_weights", [1.0, 0.7 / 0.3])
+        super().__init__(*args, **kwargs)
+        defaults = {
+            "d_ctx": 256,
+            "stress_encoder_layers": 3,
+            "stress_encoder_input_layer": 9,
+            "decoder_input_layer": 12,
+            "encoder_dropout": 0.1,
+            "dropout": 0.0,
+            "gate_bias_init": -3.0,
+            "stress_reg_coeff": 0.0,
+            "additional_decoder_init_layer": -1,
+        }
+        supplied = prowhistress_config or {}
+        unknown = set(supplied) - set(defaults)
+        if unknown:
+            raise ValueError(f"Unknown prowhistress_config keys: {sorted(unknown)}")
+        self.prowhistress_config = {**defaults, **supplied}
+        cfg = self.prowhistress_config
+        self.d_ctx = int(cfg["d_ctx"])
+        num_layers = int(cfg["stress_encoder_layers"])
+        self.stress_encoder_input_layer = int(cfg["stress_encoder_input_layer"])
+        self.decoder_input_layer = int(cfg["decoder_input_layer"])
+        self.stress_reg_coeff = float(cfg["stress_reg_coeff"])
+        if self.d_ctx <= 0 or num_layers <= 0 or self.stress_reg_coeff < 0:
+            raise ValueError("Invalid ProWhistress dimension, depth or regularization")
+        for key in ("encoder_dropout", "dropout"):
+            if not 0 <= float(cfg[key]) < 1:
+                raise ValueError(f"{key} must be in [0, 1)")
+
+        backbone_config = self.whisper_model.config
+        for name, index, depth in (
+            ("layer_for_head", self.layer_for_head, backbone_config.decoder_layers),
+            ("stress_encoder_input_layer", self.stress_encoder_input_layer,
+             backbone_config.encoder_layers),
+            ("decoder_input_layer", self.decoder_input_layer,
+             backbone_config.encoder_layers),
+        ):
+            if not -(depth + 1) <= index <= depth:
+                raise ValueError(f"{name}={index} is outside the hidden_states range")
+
+        # The English source omits source_layer_idx. Its Chinese counterpart
+        # specifies 12, clamped to index 11 for Whisper-small's 12 blocks.
+        # Use that last-block initialization explicitly rather than guessing 9.
+        source_index = int(cfg["additional_decoder_init_layer"])
+        decoder_layers = self.whisper_model.model.decoder.layers
+        if not -len(decoder_layers) <= source_index < len(decoder_layers):
+            raise ValueError("additional_decoder_init_layer is outside decoder.layers")
+        self.additional_decoder_block.load_state_dict(
+            decoder_layers[source_index].state_dict()
+        )
+
+        d_model = backbone_config.d_model
+        self.stress_encoder = StressEncoder(
+            d_model, backbone_config.encoder_attention_heads, num_layers,
+            dropout=float(cfg["encoder_dropout"]),
+        )
+        self.stress_dropout = nn.Dropout(float(cfg["dropout"]))
+        self.dec_to_ctx = nn.Linear(d_model, self.d_ctx, bias=False)
+        self.enc_to_ctx = nn.Linear(d_model, self.d_ctx, bias=False)
+        self.ctx_to_model = nn.Linear(self.d_ctx, d_model, bias=False)
+        # Preserve the author's fallback: 256 cannot be split into 12 heads.
+        num_heads = backbone_config.decoder_attention_heads
+        if self.d_ctx % num_heads:
+            num_heads = next(h for h in (8, 4, 2, 1) if self.d_ctx % h == 0)
+        self.audio_feature_extractor = nn.MultiheadAttention(
+            self.d_ctx, num_heads, batch_first=True,
+        )
+        self.fusion_gate = GatedResidualFusion(d_model, float(cfg["gate_bias_init"]))
+        self.max_text_length = backbone_config.max_target_positions
+        self.whisper_model.requires_grad_(False)
+
+    def _stress_logits(self, backbone_outputs):
+        decoder_states = backbone_outputs.decoder_hidden_states[self.layer_for_head]
+        implicit = self.additional_decoder_block(
+            hidden_states=decoder_states,
+            encoder_hidden_states=backbone_outputs.encoder_hidden_states[
+                self.decoder_input_layer
+            ],
+        )[0]
+        acoustic = self.stress_dropout(self.stress_encoder(
+            backbone_outputs.encoder_hidden_states[self.stress_encoder_input_layer]
+        ))
+        query = self.dec_to_ctx(decoder_states)
+        key_value = self.enc_to_ctx(acoustic)
+        explicit, _ = self.audio_feature_extractor(
+            query, key_value, key_value, need_weights=False,
+        )
+        explicit = self.ctx_to_model(explicit)
+        fused = self.fusion_gate(implicit, explicit)
+        return self.classifier(fused), explicit
+
+    def forward(
+        self, input_features, attention_mask=None, decoder_input_ids=None,
+        labels_head=None, whisper_labels=None, phone_ids=None,
+        phone_labels_head=None, token_pos_ids=None, word_ids=None,
+    ):
+        self.whisper_model.eval()
+        with torch.no_grad():
+            backbone = self.whisper_model(
+                input_features=input_features,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                labels=whisper_labels,
+                output_hidden_states=True,
+            )
+        logits, explicit = self._stress_logits(backbone)
+        preds = logits.argmax(dim=-1)
+        loss_main = loss = None
+        if labels_head is not None:
+            preds = preds.masked_fill(labels_head.eq(-100), -100)
+            loss_main = self.loss_fct(logits.reshape(-1, 2), labels_head.reshape(-1))
+            loss = self.lambda_ssd * loss_main
+            if self.stress_reg_coeff:
+                loss = loss + self.stress_reg_coeff * explicit.square().mean()
+        return CustomPhnModelOutput(
+            loss=loss, loss_main=loss_main, logits=logits, preds=preds,
+            labels_head=labels_head, whisper_logits=backbone.logits,
+        )
+
+    @torch.no_grad()
+    def generate_dual(
+        self, input_features, attention_mask=None, max_length=96,
+        labels_head=None, whisper_labels=None, **generate_kwargs,
+    ):
+        generate_kwargs.pop("return_dict_in_generate", None)
+        generated = self.whisper_model.generate(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            max_length=max_length,
+            return_dict_in_generate=True,
+            **generate_kwargs,
+        )
+        # Reuse the exact training head on the generated transcription.
+        # Gold transcription/stress labels are never passed to generation.
+        output = self.forward(
+            input_features=input_features,
+            attention_mask=attention_mask,
+            decoder_input_ids=generated.sequences,
+        )
+        head_preds = output.preds.masked_fill(
+            torch.isin(generated.sequences, torch.tensor(
+                self.processor.tokenizer.all_special_ids,
+                device=generated.sequences.device,
+            )), -100,
+        )
+        return CustomPhnModelOutput(
+            logits=output.logits, head_preds=head_preds,
+            preds=generated.sequences,
+            whisper_logits=getattr(generated, "logits", None),
+        )
+
+    def generate(self, input_features, max_length=96, **generate_kwargs):
+        return self.generate_dual(
+            input_features, max_length=max_length, **generate_kwargs,
+        ).head_preds
+
+    def load_model(self, save_dir=None):
+        if save_dir is not None:
+            # Both streams must be restored; loading just the two legacy head
+            # files would leave the entire explicit branch randomly initialized.
+            self.load_state_dict(torch.load(
+                os.path.join(save_dir, "model.pt"),
+                map_location=next(self.parameters()).device,
+                weights_only=True,
+            ))
+
+    def __str__(self):
+        return "ProWhiStress"
+
+
 class WhiStressPos(WhiStress):
     def __init__(self, *args, pos_bias_config=None,
                  freeze_pretrained_heads=False, **kwargs):
