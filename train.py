@@ -19,6 +19,7 @@ from torch.nn.utils.rnn import pad_sequence
 from whistress.inference_client.utils import prepare_audio, save_model_parts, get_loaded_model
 from whistress.model.model import (
     WhiStress,
+    ProWhiStress,
     WhiStressPos,
     WhiStressPhn,
     WhiStressPhnPairedResidual,
@@ -64,6 +65,7 @@ if __name__ == "__main__":
     relation_loss_config = model_args.get("relation_loss_config", None)
     mil_loss_config = model_args.get("mil_loss_config", None)
     initialization_config = model_args.get("initialization_config", {})
+    prowhistress_config = model_args.get("prowhistress_config", None)
     #wandb.init(project="whistress", name=args.exp_dir, config=vars(args), mode="online")
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
@@ -96,6 +98,8 @@ if __name__ == "__main__":
         "layer_for_head": layer_for_head,
         "whisper_tag": whisper_tag
     }
+    if model_type == "ProWhiStress":
+        hyper_params["prowhistress_config"] = prowhistress_config or {}
     if model_type in [
         "WhiStressPos",
         "WhiStressPhnStaticPosRelativeLocusCoupled",
@@ -148,6 +152,14 @@ if __name__ == "__main__":
                     layer_for_head=layer_for_head, 
                     whisper_backbone_name=whisper_tag,
                     loss_lambdas=loss_lambdas).to(device)
+    elif model_type == "ProWhiStress":
+        print("Train ProWhiStress")
+        model = ProWhiStress(
+                    config=config,
+                    layer_for_head=layer_for_head,
+                    whisper_backbone_name=whisper_tag,
+                    loss_lambdas=loss_lambdas,
+                    prowhistress_config=prowhistress_config).to(device)
     elif model_type == "WhiStressPos":
         print("Train WhiStressPos")
         model = WhiStressPos(config=config,
